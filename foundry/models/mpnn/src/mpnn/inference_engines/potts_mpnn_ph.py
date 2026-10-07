@@ -35,6 +35,7 @@ Conventions (unify the Potts energy head and the decoder log-prob field):
 """
 
 import copy
+import logging
 import multiprocessing as mp
 import random
 from dataclasses import dataclass, field
@@ -65,6 +66,8 @@ from mpnn.ph.session import DesignInputs, SwitchDesignRun
 from mpnn.ph.session import run_switch_design as _run_switch_design
 from mpnn.ph.states import site_index_from_arrays
 from mpnn.ph.vocab_meta import TokenTable
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +102,9 @@ DEFAULT_DEP_MAP: Dict[str, List[str]] = {
 }
 # Microstates forbidden as design *choices* (centre placement is set separately).
 DEFAULT_FORBIDDEN_TOKENS: List[str] = ["HIS-A", "ASP-A", "GLU-A", "HIS-D"]
+
+
+DEFAULT_INTERFACE_DISTANCE = 6.0   # angstroms, CA-CA; see PHDesignCriteria.interface_distance
 
 
 @dataclass
@@ -245,8 +251,14 @@ class PHDesignCriteria:
     # the max_mutations positions CLOSEST-coupled to the centres (by _knn_rank). 0 = no cap (default no-op).
     # Sweepable (see _axis_expand / the sampling block).
     max_mutations: int = 0
+    # Binder residues whose CA lies within this many angstroms of any target CA form the "interface"
+    # placement region. 6 suits compact interfaces; loops that reach over the target (e.g. nanobody
+    # CDRs) may need 8 or more, otherwise "interface" can come out empty and no site is found.
+    interface_distance: float = DEFAULT_INTERFACE_DISTANCE
 
     def __post_init__(self) -> None:
+        if self.interface_distance <= 0:
+            raise ValueError(f"interface_distance must be > 0 (got {self.interface_distance}).")
         if self.method not in ALL_METHODS:
             raise ValueError(f"Unknown method '{self.method}'. Available: {ALL_METHODS}")
         if self.backend not in ("potts", "mpnn"):
@@ -733,7 +745,7 @@ def _binder_region_masks(proc_atom_array, token_aa, binder_chain, chainA_t, devi
                     if p is not None:
                         iface[p] = True
     except Exception:
-        pass
+        logger.warning("interface region could not be computed; it will be empty", exc_info=True)
     try:                                                      # core/surface: residue-level RASA
         # RESIDUE SASA / MAX ASA, which is what a 0.2 "buried" threshold means.
         #
@@ -762,7 +774,7 @@ def _binder_region_masks(proc_atom_array, token_aa, binder_chain, chainA_t, devi
             else:
                 surface[p] = True
     except Exception:
-        pass
+        logger.warning("core/surface regions could not be computed; they will be empty", exc_info=True)
     return {"interface": iface, "core": core, "surface": surface}
 
 
@@ -1436,7 +1448,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             # focus on the interacting residues; [all] = whole chain).
             free = set(int(x) for x in ctx.chA_free_idx.tolist())
             if crit.placement_region and "all" not in crit.placement_region:
-                region = set(int(x) for x in ctx.region_mask(crit.placement_region).nonzero().flatten().tolist())
+                region = set(int(x) for x in ctx.region_mask(crit.placement_region, crit.interface_distance).nonzero().flatten().tolist())
                 free = free & region
             designable = sorted(free)
             if not designable:
@@ -1452,7 +1464,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         if crit.center_types:
             # EXACT composition: place one distinct, best-ranked site per type (positions chosen by the
             # placement method within the region). Yields exactly ONE plan of that multiset.
-            region_idx = ctx.region_mask(crit.placement_region).nonzero().flatten()
+            region_idx = ctx.region_mask(crit.placement_region, crit.interface_distance).nonzero().flatten()
             if int(region_idx.numel()) < len(crit.center_types):
                 return []
             place = PlacementPlan.placement_fn(crit.placement_by)
@@ -1468,7 +1480,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             plan = _finalize_plan(ctx, crit, pins)
             return [plan] if plan is not None else []
 
-        region_idx = ctx.region_mask(crit.placement_region).nonzero().flatten()
+        region_idx = ctx.region_mask(crit.placement_region, crit.interface_distance).nonzero().flatten()
         if int(region_idx.numel()) < crit.center_count:
             return []
         place = PlacementPlan.placement_fn(crit.placement_by)
@@ -1848,18 +1860,43 @@ class _PHContext:
                 m[i] = True
         return m
 
-    def region_mask(self, names: Sequence[str]) -> torch.Tensor:
+    def region_masks_at(self, interface_distance: float) -> Dict[str, torch.Tensor]:
+        """Region masks for an interface cutoff in angstroms; each distinct cutoff is computed once.
+
+        The default cutoff comes from ``_build_context``; others re-run the geometry on the
+        processed atom array the context keeps."""
+        distance = round(float(interface_distance), 6)
+        if distance == DEFAULT_INTERFACE_DISTANCE:
+            return self.region_masks
+        cache = self.__dict__.setdefault("_region_cache", {})
+        if distance not in cache:
+            if self.proc_atom_array is None:
+                raise RuntimeError("The context carries no processed atom array.")
+            cache[distance] = _binder_region_masks(
+                self.proc_atom_array, self.token_aa, self.binder_chain, self.chainA_t,
+                self.device, self.L, interface_dist=distance)
+        return cache[distance]
+
+    def region_mask(self, names: Sequence[str], interface_distance: Optional[float] = None) -> torch.Tensor:
         """OR of the requested region masks ∩ free binder positions. 'all' (or empty / unknown names)
         -> all free binder positions."""
         free = self.free_mask & self.chainA_t
         if not names or "all" in names:
             return free.clone()
+        masks = (self.region_masks if interface_distance is None
+                 else self.region_masks_at(interface_distance))
         base = torch.zeros(self.L, dtype=torch.bool, device=self.device)
         for n in names:
-            m = self.region_masks.get(n)
+            m = masks.get(n)
             if m is not None:
                 base = base | m
-        return base & free
+        region = base & free
+        if not bool(region.any()):
+            logger.warning(
+                "placement_region %s selects no free binder position (interface_distance=%s); "
+                "no placement site can be found",
+                list(names), interface_distance if interface_distance is not None else DEFAULT_INTERFACE_DISTANCE)
+        return region
 
     def binder_pos_of_res_id(self, res_id: int) -> int:
         pos = self.res_id_to_pos.get(int(res_id))
