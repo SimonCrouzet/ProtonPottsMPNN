@@ -139,6 +139,30 @@ class TokenTable:
             out.append(self._index[meta.parent])
         return out
 
+    def design_mask(
+        self,
+        allow_bare_titratable: Sequence[str] = (),
+        forbid: Sequence[str] = (UNKNOWN_TOKEN,),
+    ) -> List[bool]:
+        """Which tokens a freely designed position may take.
+
+        Protonation-state tokens are never allowed: a designed residue has no stated
+        state, and letting the optimiser pick one lets it dodge the condition states.
+        Bare His/Asp/Glu are excluded too unless listed in ``allow_bare_titratable``
+        (their bare-token energies mean "state unspecified" and are less calibrated).
+        """
+        titratable = set(self.titratable_parents())
+        unknown = set(allow_bare_titratable) - titratable
+        if unknown:
+            raise ValueError(f"Not titratable in this vocabulary: {sorted(unknown)}")
+        mask = []
+        for meta in self._meta:
+            allowed = meta.state is Protonation.UNSPECIFIED and meta.name not in forbid
+            if allowed and meta.parent in titratable:
+                allowed = meta.parent in allow_bare_titratable
+            mask.append(allowed)
+        return mask
+
     def resolve(self, parent: str, spec: str) -> str:
         """Turn a token name or a state word into one token of ``parent``.
 

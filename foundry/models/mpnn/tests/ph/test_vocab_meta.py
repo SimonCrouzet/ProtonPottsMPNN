@@ -114,3 +114,19 @@ def test_parent_index_needs_bare_parent():
 def test_index_error_names_the_token(v6):
     with pytest.raises(KeyError, match="HID"):
         v6.index("HID")
+
+
+def test_design_mask_blocks_state_tokens_and_titratable_residues(v6):
+    mask = dict(zip(v6.names, v6.design_mask()))
+    assert not mask["UNK"]
+    assert not any(mask[t] for t in v6.names if "-" in t)  # no state tokens
+    assert not any(mask[t] for t in ("HIS", "ASP", "GLU"))
+    assert all(mask[t] for t in ("ALA", "LYS", "TRP", "GLY"))
+    assert sum(mask.values()) == 17
+
+
+def test_design_mask_can_admit_bare_titratable_residues(v6):
+    mask = dict(zip(v6.names, v6.design_mask(allow_bare_titratable=["HIS"])))
+    assert mask["HIS"] and not mask["ASP"] and not mask["HIS-P"]
+    with pytest.raises(ValueError, match="Not titratable"):
+        v6.design_mask(allow_bare_titratable=["LYS"])
