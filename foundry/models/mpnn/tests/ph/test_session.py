@@ -187,3 +187,52 @@ def test_describe_renders_one_chain_of_a_design():
     assert run.describe(best, "B")["canonical_sequence"] == "AHA"
     with pytest.raises(ValueError, match="not in the structure"):
         run.describe(best, "Z")
+
+
+def test_to_rows_lists_ranked_designs_with_terms_and_mutations():
+    config = make_config(allow_bare_titratable=["HIS"], search="pareto", divisions=2)
+    run = run_switch_design(make_inputs(), config)
+    rows = run.to_rows("A")
+    assert [r["rank"] for r in rows] == list(range(len(run.result.records)))
+    for row in rows:
+        assert {"canonical_sequence", "n_mutations", "front", "selected"} <= set(row)
+        assert {"term_stability", "term_potency", "term_switch"} <= set(row)
+        assert row["mode"] == "pareto"
+    input_sequence = "HAA"  # the binder tokens of the toy structure
+    first = rows[0]["canonical_sequence"]
+    assert rows[0]["n_mutations"] == sum(a != b for a, b in zip(input_sequence, first))
+    with pytest.raises(ValueError, match="chain length"):
+        run.to_rows("A", reference_sequence="HA")
+
+
+def identical_conditions(ph_on=7.4, ph_off=6.5):
+    states = {"A:1": "deprotonated", "B:2": "deprotonated"}
+    return {
+        "on": {"ph": ph_on, "states": dict(states)},
+        "off": {"ph": ph_off, "states": dict(states)},
+    }
+
+
+def test_identical_on_and_off_states_cannot_make_a_switch():
+    """With the same states in both conditions a state-based switch term is always zero."""
+    with pytest.raises(ValueError, match="identical states"):
+        run_switch_design(make_inputs(), make_config(conditions=identical_conditions()))
+    # no switch term: a single condition's states are all that is used
+    run_switch_design(
+        make_inputs(),
+        make_config(
+            conditions=identical_conditions(), terms={"potency": {"weight": 1.0}}
+        ),
+    )
+
+
+def test_identical_states_are_fine_for_linked_equilibrium_when_the_ph_differs():
+    options = dict(binding_model="linked_equilibrium", binding_options={"beta": 0.7})
+    run_switch_design(
+        make_inputs(), make_config(conditions=identical_conditions(), **options)
+    )
+    with pytest.raises(ValueError, match="identical states"):
+        run_switch_design(
+            make_inputs(),
+            make_config(conditions=identical_conditions(7.0, 7.0), **options),
+        )

@@ -74,6 +74,11 @@ def block_descent(
     At ``temperature > 0`` blocks are sampled, so the last state is not necessarily the
     best; the best state seen is returned. Pass a seeded ``generator`` to reproduce
     a run.
+
+    Only a sequence whose designable positions all hold allowed tokens (``valid_mask``)
+    can be returned: a forbidden token in ``tokens`` (for example a native ``HIS-S``) is
+    replaced during the first sweep even when it scores better than every allowed
+    replacement, and partly corrected sequences never qualify.
     """
     if block_size < 1:
         raise ValueError("block_size must be >= 1.")
@@ -86,8 +91,15 @@ def block_descent(
     def value_of(seq: torch.Tensor) -> float:
         return objective.scalarised_value(seq, names, weights, scalarisation)
 
+    def is_valid(seq: torch.Tensor) -> bool:
+        if valid_mask is None or not designable:
+            return True
+        return bool(valid_mask.to(seq.device)[seq[designable]].all())
+
     value = value_of(current)
-    best, best_value = current.clone(), value
+    best, best_value = None, float("inf")
+    if is_valid(current):
+        best, best_value = current.clone(), value
     result = DescentResult(tokens=current, value=value, trace=[value])
     for round_index in range(1, max_rounds + 1):
         changed = False
@@ -110,11 +122,17 @@ def block_descent(
                 result.n_changes += 1
             value = value_of(current)
             result.trace.append(value)
-            if value < best_value:
+            if is_valid(current) and value < best_value:
                 best, best_value = current.clone(), value
         result.rounds = round_index
         if not changed:
             result.converged = True
             break
+    if (
+        best is None
+    ):  # cannot happen after one sweep: every designable position was re-chosen
+        raise RuntimeError(
+            "Descent ended without reaching a sequence of allowed tokens."
+        )
     result.tokens, result.value = best, best_value
     return result

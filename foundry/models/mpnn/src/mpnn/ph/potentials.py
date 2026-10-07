@@ -26,6 +26,9 @@ class BlockPotentials:
 
     ``unary`` is ``[B, V]``; each edge table is ``[V, V]`` indexed (position i, position
     j) with ``i < j``. Lower energy is better throughout.
+
+    Every tensor lives on the device of ``unary``: edge tables are moved there on
+    construction, and new tensors are allocated there.
     """
 
     def __init__(
@@ -43,7 +46,7 @@ class BlockPotentials:
                 raise ValueError(f"Edge key {(i, j)} must satisfy 0 <= i < j < B.")
             if table.shape != (unary.shape[1], unary.shape[1]):
                 raise ValueError("Edge tables must be [V, V].")
-            self.edges[(i, j)] = table
+            self.edges[(i, j)] = table.to(unary.device)
         self.const = float(const)
 
     @property
@@ -55,8 +58,8 @@ class BlockPotentials:
         return int(self.unary.shape[1])
 
     @classmethod
-    def zeros(cls, n_block: int, vocab_size: int, dtype=torch.float32):
-        return cls(torch.zeros(n_block, vocab_size, dtype=dtype))
+    def zeros(cls, n_block: int, vocab_size: int, dtype=torch.float32, device=None):
+        return cls(torch.zeros(n_block, vocab_size, dtype=dtype, device=device))
 
     @classmethod
     def from_pairs(
@@ -87,11 +90,13 @@ class BlockPotentials:
 
     def __add__(self, other: "BlockPotentials") -> "BlockPotentials":
         self._check_compatible(other)
+        device = self.unary.device
         edges = dict(self.edges)
         for key, table in other.edges.items():
+            table = table.to(device)
             edges[key] = edges[key] + table if key in edges else table
         return BlockPotentials(
-            self.unary + other.unary, edges, self.const + other.const
+            self.unary + other.unary.to(device), edges, self.const + other.const
         )
 
     def scaled(self, factor: float) -> "BlockPotentials":
@@ -124,7 +129,9 @@ class BlockPotentials:
                 f"Joint enumeration of {v}**{n} = {v**n:,} assignments exceeds the cap "
                 f"of {max_elements:,}; use a smaller block."
             )
-        out = torch.full([v] * n, self.const, dtype=self.unary.dtype)
+        out = torch.full(
+            [v] * n, self.const, dtype=self.unary.dtype, device=self.unary.device
+        )
         for i in range(n):
             shape = [1] * n
             shape[i] = v
@@ -150,7 +157,9 @@ class BlockPotentials:
             )
         if slots and not (0 <= slots[0] and slots[-1] < n_block):
             raise ValueError("slots out of range.")
-        unary = torch.zeros(n_block, self.vocab_size, dtype=self.unary.dtype)
+        unary = torch.zeros(
+            n_block, self.vocab_size, dtype=self.unary.dtype, device=self.unary.device
+        )
         for k, slot in enumerate(slots):
             unary[slot] = self.unary[k]
         edges = {(slots[i], slots[j]): t for (i, j), t in self.edges.items()}

@@ -56,6 +56,7 @@ class TermContext:
     conditions: Mapping[str, ResolvedCondition]
     on: Optional[str] = None
     off: Optional[str] = None
+    receptor_view: Optional[SystemView] = None  # for per-site reports
 
     def tokens_in(self, tokens: torch.Tensor, condition: str) -> torch.Tensor:
         try:
@@ -316,6 +317,7 @@ def choose_assignment(
     """
     n = joint.ndim
     if valid_mask is not None:
+        valid_mask = valid_mask.to(joint.device)  # the mask is built on the CPU
         for axis in range(n):
             shape = [1] * n
             shape[axis] = -1
@@ -328,6 +330,8 @@ def choose_assignment(
     else:
         logits = -(flat - flat.min()) / temperature
         probs = torch.softmax(logits, dim=0)
+        if generator is not None:  # sample on the generator's device (usually the CPU)
+            probs = probs.to(generator.device)
         index = int(torch.multinomial(probs, 1, generator=generator))
     return tuple(int(i) for i in np.unravel_index(index, tuple(joint.shape)))
 
@@ -345,19 +349,29 @@ class Objective:
         self.terms = dict(terms)
         self.scales: Dict[str, TermScale] = dict(scales or {})
 
+    # The two evaluation hooks below are the only places a term is evaluated, so a subclass
+    # (see mpnn.ph.ensemble) can change how values are produced without touching the rest.
+    def block_values(
+        self, name: str, tokens: torch.Tensor, block: Sequence[int]
+    ) -> torch.Tensor:
+        """Term ``name`` for every joint assignment of ``block``: shape ``[V] * B``."""
+        return self.terms[name].block_values(self.ctx, tokens, block)
+
+    def value(self, name: str, tokens: torch.Tensor) -> float:
+        """Term ``name`` for one full sequence."""
+        return self.terms[name].value(self.ctx, tokens)
+
     def term_values(
         self, tokens: torch.Tensor, names: Optional[Sequence[str]] = None
     ) -> Dict[str, float]:
         """Raw (unscaled) value of each term for a full sequence."""
-        return {n: self.terms[n].value(self.ctx, tokens) for n in names or self.terms}
+        return {n: self.value(n, tokens) for n in names or self.terms}
 
     def term_matrix(
         self, sequences: Sequence[torch.Tensor], names: Sequence[str]
     ) -> np.ndarray:
         """``[n_sequences, n_terms]`` raw values, the input of Pareto selection."""
-        return np.array(
-            [[self.terms[n].value(self.ctx, s) for n in names] for s in sequences]
-        )
+        return np.array([[self.value(n, s) for n in names] for s in sequences])
 
     def freeze_scales(
         self,
@@ -367,10 +381,9 @@ class Objective:
     ) -> Dict[str, TermScale]:
         """Estimate and store scales from the enumerated ``blocks`` around ``tokens``."""
         for name in names or self.terms:
-            term = self.terms[name]
-            joints = [term.block_values(self.ctx, tokens, b) for b in blocks]
+            joints = [self.block_values(name, tokens, b) for b in blocks]
             self.scales[name] = estimate_term_scale(
-                joints, center=term.value(self.ctx, tokens)
+                joints, center=self.value(name, tokens)
             )
         return self.scales
 
@@ -388,7 +401,7 @@ class Objective:
         scaled = []
         for name, weight in zip(names, weights):
             scale = self.scales.get(name, TermScale())
-            z = scale.z(self.terms[name].block_values(self.ctx, tokens, block))
+            z = scale.z(self.block_values(name, tokens, block))
             scaled.append((weight, z, scale.ideal))
         if scalarisation == "weighted_sum":
             return sum(w * z for w, z, _ in scaled)
@@ -410,9 +423,7 @@ class Objective:
         parts = []
         for name, weight in zip(names, weights):
             scale = self.scales.get(name, TermScale())
-            raw = torch.tensor(
-                self.terms[name].value(self.ctx, tokens), dtype=torch.float64
-            )
+            raw = torch.tensor(self.value(name, tokens), dtype=torch.float64)
             parts.append((weight, float(scale.z(raw)), scale.ideal))
         if scalarisation == "weighted_sum":
             return sum(w * z for w, z, _ in parts)

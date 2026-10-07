@@ -5,19 +5,12 @@ returns real ``_PottsScorer`` objects built from random tables.
 """
 
 import itertools
-from types import SimpleNamespace
 
-import numpy as np
 import pytest
 import torch
+from engine_fixtures import CHAINS, RES_IDS, bare_engine, make_ctx
 from objective_fixtures import BASE, DESIGN_BLOCK, NAMES, PARENTS, SPEC
-from potts_fixtures import V, random_graph_potts
 
-from mpnn.ph.engine_adapter import PottsScorerAdapter
-from mpnn.ph.vocab_meta import TokenTable
-
-CHAINS = ["A", "A", "A", "B", "B", "B"]
-RES_IDS = [1, 2, 3, 1, 2, 3]
 CONFIG = {
     "conditions": SPEC["conditions"],
     "terms": {
@@ -33,51 +26,8 @@ CONFIG = {
 
 @pytest.fixture
 def wired(engine):
-    table = TokenTable(NAMES)
-    etab, e_idx = random_graph_potts(6, 4, V, seed=11)
-    complex_scorer = engine._PottsScorer(etab, e_idx)
-    encoding = SimpleNamespace(
-        idx_to_token=dict(enumerate(NAMES)),
-        token_to_idx={n: i for i, n in enumerate(NAMES)},
-    )
-    ctx = engine._PHContext(
-        device=torch.device("cpu"),
-        encoding=encoding,
-        extended_vocab="v6",
-        canonical_map=torch.tensor(table.parent_index()),
-        token_aa=SimpleNamespace(
-            chain_id=np.array(CHAINS),
-            res_id=np.array(RES_IDS),
-            res_name=np.array(PARENTS),
-        ),
-        S_native=BASE.clone(),
-        scorer=complex_scorer,
-        field_potts=None,
-        field_mpnn=None,
-        free_mask=torch.tensor([True] * 3 + [False] * 3),
-        V=V,
-        L=6,
-        unknown_indices=[],
-        eidx_np=e_idx[0].numpy(),
-        K=4,
-        chainA_t=torch.tensor([True] * 3 + [False] * 3),
-        binder_chain="A",
-        network_input={},
-    )
-    engine_obj = object.__new__(engine.PottsMPNNPHEngine)
-    isolated = {
-        ("A",): (
-            PottsScorerAdapter(engine._PottsScorer(*random_graph_potts(3, 3, V, 21))),
-            [0, 1, 2],
-        ),
-        ("B",): (
-            PottsScorerAdapter(engine._PottsScorer(*random_graph_potts(3, 3, V, 22))),
-            [3, 4, 5],
-        ),
-    }
-    engine_obj._isolated_scorer = lambda c, chains, site_index: isolated[tuple(chains)]
-    engine_obj._build_context = lambda atom_array, chain, base_seed=0: ctx
-    return engine_obj, ctx
+    ctx = make_ctx(engine)
+    return bare_engine(engine, ctx), ctx
 
 
 def test_design_inputs_describe_the_complex(wired):
@@ -93,6 +43,7 @@ def test_design_inputs_describe_the_complex(wired):
         5,
     ]
     assert inputs.partner_rank(0) == [int(j) for j in ctx.eidx_np[0] if j != 0]
+    assert (inputs.neighbour_index == ctx.eidx_np).all()  # for designable.near
 
 
 def test_design_inputs_need_a_receptor_chain(wired):
@@ -130,3 +81,52 @@ def test_run_switch_design_accepts_the_pareto_option(wired):
         config={**CONFIG, "search": "pareto", "divisions": 2},
     )
     assert run.result.plan.mode == "pareto" and run.result.hypervolume > 0
+
+
+def test_ensemble_design_builds_inputs_for_each_structure(engine):
+    contexts = {"human": make_ctx(engine), "mouse": make_ctx(engine)}
+    runner = bare_engine(engine, contexts["human"])
+    runner._build_context = lambda atom_array, chain, base_seed=0: contexts[atom_array]
+    run = runner.run_switch_design_ensemble(
+        structures={"human": "human", "mouse": "mouse"},
+        binder_chain="A",
+        config=CONFIG,
+    )
+    assert list(run.members) == ["human", "mouse"]
+    assert run.designable == DESIGN_BLOCK
+    assert set(run.result.records[0].per_state) == {"human", "mouse"}
+
+
+@pytest.mark.parametrize("method", ["single", "ensemble"])
+@pytest.mark.parametrize(
+    "seed, base_seed, expected",
+    [(7, 3, 7), (None, 3, 3), (0, 3, 0), (None, 0, 0)],  # an explicit 0 is explicit
+)
+def test_the_seed_argument_overrides_the_configs_base_seed(
+    engine, monkeypatch, method, seed, base_seed, expected
+):
+    ctx = make_ctx(engine)
+    runner = bare_engine(engine, ctx)
+    context_seeds, search_configs = [], []
+    runner._build_context = lambda atom_array, chain, base_seed=0: (
+        context_seeds.append(base_seed) or ctx
+    )
+
+    def spy(inputs, config):
+        search_configs.append(config)
+        return "run"
+
+    monkeypatch.setattr(engine, "_run_switch_design", spy)
+    monkeypatch.setattr(engine, "_run_switch_design_ensemble", spy)
+    config = {**CONFIG, "base_seed": base_seed}
+    kwargs = {} if seed is None else {"seed": seed}
+    if method == "single":
+        runner.run_switch_design(
+            atom_array=None, binder_chain="A", config=config, **kwargs
+        )
+    else:
+        runner.run_switch_design_ensemble(
+            structures={"human": None}, binder_chain="A", config=config, **kwargs
+        )
+    assert [c.base_seed for c in search_configs] == [expected]  # the search stream
+    assert context_seeds == [expected]  # and the featurisation use the same seed

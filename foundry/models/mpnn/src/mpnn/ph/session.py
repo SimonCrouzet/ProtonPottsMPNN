@@ -9,9 +9,10 @@ structure (see ``PottsMPNNPHEngine.run_switch_design``); tests supply synthetic 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 
 from mpnn.ph.binding import (
@@ -22,7 +23,10 @@ from mpnn.ph.binding import (
     make_binding_model,
 )
 from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
+from mpnn.ph.ensemble import EnsembleMember, EnsembleObjective
+from mpnn.ph.neighbourhood import cap_by_rank, near_ranks
 from mpnn.ph.objective import Objective, TermContext
+from mpnn.ph.report import site_report, validate_report_tokens
 from mpnn.ph.search import SearchResult, run_search
 from mpnn.ph.states import (
     ResolvedCondition,
@@ -58,6 +62,8 @@ class DesignInputs:
     binder_positions: Sequence[int]
     receptor_positions: Sequence[int]
     partner_rank: Optional[Callable[[int], Sequence[int]]] = None
+    # the model's contact table E_idx [L, K] (slot 0 = the residue itself); needed by designable.near
+    neighbour_index: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -69,6 +75,64 @@ class SwitchDesignRun:
     designable: List[int]
     conditions: Mapping[str, ResolvedCondition]
     inputs: DesignInputs
+    report_tokens: Dict[str, Any] = field(default_factory=dict, kw_only=True)
+
+    def site_report(self, record, beta: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Per-condition, per-site comparison of the complex with the free partners.
+
+        See :func:`mpnn.ph.report.site_report`; one row per condition and titratable site.
+        """
+        return site_report(
+            self.objective.ctx,
+            self.conditions,
+            self.inputs,
+            record.tokens,
+            beta,
+            self.report_tokens,
+        )
+
+    def to_rows(
+        self, chain: str, reference_sequence: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Plain dicts, one per design in ranked order, for tables and downstream code.
+
+        ``n_mutations`` is the Hamming distance of ``chain``'s canonical sequence to
+        ``reference_sequence``, by default the input structure's own sequence for that
+        chain. Term values appear as ``term_<name>``.
+        """
+        positions = [i for i, c in enumerate(self.inputs.chain_ids) if str(c) == chain]
+        if reference_sequence is None:
+            reference_sequence = self.inputs.table.canonical_sequence(
+                [int(t) for t in self.inputs.tokens[positions]]
+            )
+        rows = []
+        for rank, record in enumerate(self.result.records):
+            design = self.describe(record, chain)
+            if len(reference_sequence) != len(design["canonical_sequence"]):
+                raise ValueError("reference_sequence does not match the chain length.")
+            rows.append(
+                {
+                    "rank": rank,
+                    "chain": chain,
+                    "canonical_sequence": design["canonical_sequence"],
+                    "extended_tokens": " ".join(design["extended_tokens"]),
+                    "n_mutations": sum(
+                        a != b
+                        for a, b in zip(
+                            reference_sequence, design["canonical_sequence"]
+                        )
+                    ),
+                    "mode": self.result.plan.mode,
+                    "front": record.front,
+                    "selected": record.selected,
+                    "scalarised": record.scalarised,
+                    "weights": dict(record.weights),
+                    "run_index": record.run_index,
+                    "seed_index": record.seed_index,
+                    **{f"term_{k}": v for k, v in record.term_values.items()},
+                }
+            )
+        return rows
 
     def describe(self, record, chain: str) -> Dict[str, Any]:
         """One chain of a design as a canonical sequence and its token names.
@@ -89,13 +153,20 @@ class SwitchDesignRun:
         }
 
 
-def resolve_designable(
+def designable_with_ranks(
     spec: DesignableSpec,
     chain_ids: Sequence[str],
     res_ids: Sequence[int],
     spec_sites: Sequence[SiteKey] = (),
-) -> List[int]:
-    """Positions that may change; residues set by a condition are never designable."""
+    neighbour_index: Optional[np.ndarray] = None,
+) -> Tuple[List[int], Dict[int, int]]:
+    """Designable positions before any ``near.max_mutations`` cap, with their closeness ranks.
+
+    Residues set by a condition are never designable. With ``spec.near`` the set is
+    restricted to the residues coupled to the named sites in ``neighbour_index`` (the
+    model's contact table), and ``ranks`` orders them from closest; without it ``ranks`` is
+    empty. The cap is applied separately so that several target states can share one.
+    """
     index = site_index_from_arrays(chain_ids, res_ids)
     chains = set(spec.chains)
     unknown = chains - {str(c) for c in chain_ids}
@@ -114,9 +185,37 @@ def resolve_designable(
             len(overlap),
         )
         positions -= fixed_by_spec
+    if spec.near is not None and positions:
+        if neighbour_index is None:
+            raise ValueError(
+                "designable.near needs the model's contact table (DesignInputs.neighbour_index)."
+            )
+        centres = [_lookup(index, text) for text in spec.near.sites]
+        ranks = near_ranks(neighbour_index, centres, positions, k=spec.near.k)
+        positions = set(ranks)
+    else:
+        ranks = {}
     if not positions:
         raise ValueError("No designable positions: check 'designable' in the config.")
-    return sorted(positions)
+    return sorted(positions), ranks
+
+
+def _cap(spec: DesignableSpec) -> int:
+    return spec.near.max_mutations if spec.near is not None else 0
+
+
+def resolve_designable(
+    spec: DesignableSpec,
+    chain_ids: Sequence[str],
+    res_ids: Sequence[int],
+    spec_sites: Sequence[SiteKey] = (),
+    neighbour_index: Optional[np.ndarray] = None,
+) -> List[int]:
+    """Positions that may change: :func:`designable_with_ranks` with the cap applied."""
+    positions, ranks = designable_with_ranks(
+        spec, chain_ids, res_ids, spec_sites, neighbour_index
+    )
+    return cap_by_rank(positions, ranks, _cap(spec))
 
 
 def _lookup(index: Mapping[SiteKey, int], text: str) -> int:
@@ -167,14 +266,41 @@ def _no_options(name: str, options: Mapping[str, Any]) -> None:
         raise ValueError(f"{name} takes no binding_options (got {sorted(options)}).")
 
 
-def run_switch_design(
-    inputs: DesignInputs, config: SwitchDesignConfig
-) -> SwitchDesignRun:
-    """Resolve the states, build the objective and run the planned search."""
+def _check_switch_can_differ(
+    config: SwitchDesignConfig, conditions: Mapping[str, ResolvedCondition]
+) -> None:
+    """Refuse a switch term whose ``on`` and ``off`` conditions cannot differ.
+
+    With state-based binding models the energies depend on the conditions only through
+    their states, so identical states make the switch exactly zero for every design;
+    ``linked_equilibrium`` also depends on the pH.
+    """
+    on, off = config.spec.on, config.spec.off
+    weights, _ = config.weights_and_terms()
+    if "switch" not in weights or on is None or off is None:
+        return
+    if conditions[on].token_by_position != conditions[off].token_by_position:
+        return
+    if config.binding_model == "linked_equilibrium" and (
+        conditions[on].ph != conditions[off].ph
+    ):
+        return
+    raise ValueError(
+        f"The {on!r} and {off!r} conditions impose identical states"
+        + (" and the same pH" if config.binding_model == "linked_equilibrium" else "")
+        + ", so the switch term is zero for every design. Check the condition keys "
+        "(for example 'states', not 'state') and the states you assigned."
+    )
+
+
+def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
+    """Resolve one structure's states and build its objective and designable set."""
     n_positions = len(inputs.tokens)
     vocab_size = len(inputs.table)
     site_index = site_index_from_arrays(inputs.chain_ids, inputs.res_ids)
     conditions = resolve_spec(config.spec, inputs.table, site_index, inputs.parents)
+    _check_switch_can_differ(config, conditions)
+    validate_report_tokens(inputs.table, config.report_tokens)
 
     complex_view = SystemView(inputs.complex_scorer, range(n_positions), vocab_size)
     binder_view = SystemView(inputs.binder_scorer, inputs.binder_positions, vocab_size)
@@ -191,19 +317,25 @@ def run_switch_design(
         conditions=conditions,
         on=config.spec.on,
         off=config.spec.off,
+        receptor_view=receptor_view,
     )
     _, terms = config.weights_and_terms()
     objective = Objective(context, terms)
-    designable = resolve_designable(
+    designable, ranks = designable_with_ranks(
         config.designable,
         inputs.chain_ids,
         inputs.res_ids,
         sorted(config.spec.sites()),
+        inputs.neighbour_index,
     )
+    return objective, conditions, designable, ranks
+
+
+def _search(objective, inputs, designable, config) -> SearchResult:
     valid_mask = torch.tensor(
         inputs.table.design_mask(config.allow_bare_titratable), dtype=torch.bool
     )
-    result = run_search(
+    return run_search(
         objective,
         inputs.tokens,
         designable,
@@ -217,4 +349,149 @@ def run_switch_design(
         max_rounds=config.max_rounds,
         n_select=config.n_select,
     )
-    return SwitchDesignRun(result, objective, designable, conditions, inputs)
+
+
+def run_switch_design(
+    inputs: DesignInputs, config: SwitchDesignConfig
+) -> SwitchDesignRun:
+    """Resolve the states, build the objective and run the planned search."""
+    objective, conditions, designable, ranks = _prepare_state(inputs, config)
+    designable = cap_by_rank(designable, ranks, _cap(config.designable))
+    result = _search(objective, inputs, designable, config)
+    return SwitchDesignRun(
+        result,
+        objective,
+        designable,
+        conditions,
+        inputs,
+        report_tokens=dict(config.report_tokens),
+    )
+
+
+# ---- several target states sharing one binder ------------------------------------------
+@dataclass
+class EnsembleRun(SwitchDesignRun):
+    """A run over several target states; ``inputs`` and ``conditions`` are the first state's."""
+
+    members: Dict[str, EnsembleMember]
+
+    def to_rows(self, chain: str, reference_sequence: Optional[str] = None):
+        """As :meth:`SwitchDesignRun.to_rows`, plus ``term_<name>@<state>`` columns."""
+        rows = super().to_rows(chain, reference_sequence)
+        for row, record in zip(rows, self.result.records):
+            for state, values in (record.per_state or {}).items():
+                for term, value in values.items():
+                    row[f"term_{term}@{state}"] = value
+        return rows
+
+    def site_report(self, record, beta: Optional[float] = None):
+        """The per-site report of every target state, with a ``state`` column."""
+        rows = []
+        for member in self.members.values():
+            tokens = self.objective.tokens_for(member, record.tokens)
+            for row in site_report(
+                member.objective.ctx,
+                member.conditions,
+                member.inputs,
+                tokens,
+                beta,
+                self.report_tokens,
+            ):
+                rows.append({"state": member.name, **row})
+        return rows
+
+
+def _binder_keys(inputs: DesignInputs) -> Dict[SiteKey, int]:
+    return {
+        SiteKey(str(inputs.chain_ids[p]), int(inputs.res_ids[p])): int(p)
+        for p in inputs.binder_positions
+    }
+
+
+def _check_shared_binder(
+    reference_name: str,
+    reference: DesignInputs,
+    name: str,
+    inputs: DesignInputs,
+) -> Dict[int, int]:
+    """Map reference binder positions to ``inputs``' and check the binder really is shared."""
+    if inputs.table.names != reference.table.names:
+        raise ValueError(
+            f"State {name!r} uses a different vocabulary from {reference_name!r}."
+        )
+    ref_keys, keys = _binder_keys(reference), _binder_keys(inputs)
+    if set(ref_keys) != set(keys):
+        raise ValueError(
+            f"State {name!r} has different binder residues from {reference_name!r}; "
+            "the binder must be shared."
+        )
+    different = [
+        str(k)
+        for k in ref_keys
+        if reference.parents[ref_keys[k]] != inputs.parents[keys[k]]
+    ]
+    if different:
+        raise ValueError(
+            f"State {name!r}: the binder sequence differs from {reference_name!r} at {different[:5]}."
+        )
+    return {ref_keys[k]: keys[k] for k in ref_keys}
+
+
+def run_switch_design_ensemble(
+    inputs_by_state: Mapping[str, DesignInputs], config: SwitchDesignConfig
+) -> EnsembleRun:
+    """Design one binder against several target states, one complex per state.
+
+    The first state is the reference: designed tokens use its indexing and its starting
+    binder sequence. Every state must contain the same binder (same residues and
+    sequence); the conditions' sites must exist in every state. Terms are evaluated per
+    state and reduced by ``config.target_reduce`` (``max`` = worst state).
+    """
+    if not inputs_by_state:
+        raise ValueError("Need at least one target state.")
+    names = list(inputs_by_state)
+    reference_name, reference = names[0], inputs_by_state[names[0]]
+    members: Dict[str, EnsembleMember] = {}
+    designable_keys = set()
+    shared_ranks: Dict[int, int] = {}
+    reference_keys = _binder_keys(reference)
+    for name in names:
+        inputs = inputs_by_state[name]
+        position_map = (
+            {p: p for p in reference_keys.values()}
+            if name == reference_name
+            else _check_shared_binder(reference_name, reference, name, inputs)
+        )
+        try:
+            objective, conditions, designable, ranks = _prepare_state(inputs, config)
+        except (ValueError, KeyError) as err:
+            raise type(err)(f"State {name!r}: {err}") from None
+        reverse = {v: k for k, v in position_map.items()}
+        outside = [p for p in designable if p not in reverse]
+        if outside:
+            raise ValueError(
+                f"State {name!r}: designable positions {outside[:5]} are not shared binder "
+                "residues; only the shared binder can be designed in an ensemble."
+            )
+        designable_keys |= {reverse[p] for p in designable}
+        for p, rank in ranks.items():  # best rank over the states, on the shared binder
+            if p in reverse:
+                shared_ranks[reverse[p]] = min(rank, shared_ranks.get(reverse[p], rank))
+        members[name] = EnsembleMember(
+            name, objective, conditions, inputs, inputs.tokens.clone(), position_map
+        )
+    objective = EnsembleObjective(list(members.values()), reduce=config.target_reduce)
+    # one total cap on the shared set; capping each state and uniting would exceed it
+    designable = cap_by_rank(
+        sorted(designable_keys), shared_ranks, _cap(config.designable)
+    )
+    result = _search(objective, reference, designable, config)
+    return EnsembleRun(
+        result,
+        objective,
+        designable,
+        members[reference_name].conditions,
+        reference,
+        members=members,
+        report_tokens=dict(config.report_tokens),
+    )
