@@ -1,0 +1,15 @@
+# Normalise line endings to LF in the repo and in checkouts (WSL /mnt/d, Windows).
+* text=auto eol=lf
+*.sh text eol=lf
+*.ipynb text eol=lf
+*.pdb text eol=lf
+*.cif text eol=lf
+
+# Binary payloads: never convert.
+*.png binary
+*.pkl binary
+*.ckpt binary
+*.parquet binary
+*.npy binary
+*.npz binary
+*.gz binary
