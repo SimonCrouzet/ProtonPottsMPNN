@@ -62,8 +62,9 @@ from mpnn.ph.engine_adapter import (
     parent_names,
     positions_in_complex,
 )
-from mpnn.ph.session import DesignInputs, SwitchDesignRun
+from mpnn.ph.session import DesignInputs, EnsembleRun, SwitchDesignRun
 from mpnn.ph.session import run_switch_design as _run_switch_design
+from mpnn.ph.session import run_switch_design_ensemble as _run_switch_design_ensemble
 from mpnn.ph.states import site_index_from_arrays
 from mpnn.ph.vocab_meta import TokenTable
 
@@ -1125,6 +1126,32 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             config = SwitchDesignConfig.from_dict(config)
         ctx = self._build_context(atom_array, binder_chain, base_seed=seed)
         return _run_switch_design(self._design_inputs(ctx, binder_chain), config)
+
+    @torch.no_grad()
+    def run_switch_design_ensemble(
+        self,
+        *,
+        structures: Dict[str, AtomArray],
+        binder_chain: str,
+        config,
+        seed: int = 0,
+    ) -> EnsembleRun:
+        """Design one binder against several target states, one complex per state.
+
+        ``structures`` maps a state name (for example ``"human"``, ``"mouse"``) to its
+        binder-plus-target complex; every complex must hold the same binder (same residues
+        and sequence) and, for the conditions' sites, the same residue numbering. The first
+        entry is the reference. Terms are reduced over states by ``config.target_reduce``
+        (``max`` optimises the worst state). Like :meth:`run_switch_design`, not yet run end
+        to end on real structures.
+        """
+        if not isinstance(config, SwitchDesignConfig):
+            config = SwitchDesignConfig.from_dict(config)
+        inputs = {}
+        for name, atom_array in structures.items():
+            ctx = self._build_context(atom_array, binder_chain, base_seed=seed)
+            inputs[name] = self._design_inputs(ctx, binder_chain)
+        return _run_switch_design_ensemble(inputs, config)
 
     def _design_inputs(self, ctx: "_PHContext", binder_chain: str) -> DesignInputs:
         """Describe the featurised complex to ``mpnn.ph``: tokens, residues, 3 scorers."""

@@ -81,3 +81,17 @@ def test_run_switch_design_accepts_the_pareto_option(wired):
         config={**CONFIG, "search": "pareto", "divisions": 2},
     )
     assert run.result.plan.mode == "pareto" and run.result.hypervolume > 0
+
+
+def test_ensemble_design_builds_inputs_for_each_structure(engine):
+    contexts = {"human": make_ctx(engine), "mouse": make_ctx(engine)}
+    runner = bare_engine(engine, contexts["human"])
+    runner._build_context = lambda atom_array, chain, base_seed=0: contexts[atom_array]
+    run = runner.run_switch_design_ensemble(
+        structures={"human": "human", "mouse": "mouse"},
+        binder_chain="A",
+        config=CONFIG,
+    )
+    assert list(run.members) == ["human", "mouse"]
+    assert run.designable == DESIGN_BLOCK
+    assert set(run.result.records[0].per_state) == {"human", "mouse"}
