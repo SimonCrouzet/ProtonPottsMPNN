@@ -397,6 +397,30 @@ class Objective:
             raise ValueError("Tchebycheff needs at least one positive weight.")
         return torch.stack(active).amax(dim=0)
 
+    def scalarised_value(
+        self,
+        tokens: torch.Tensor,
+        names: Sequence[str],
+        weights: Sequence[float],
+        scalarisation: str = "weighted_sum",
+    ) -> float:
+        """Scalarised objective of one full sequence (same scales as the joints)."""
+        if scalarisation not in SCALARISATIONS:
+            raise ValueError(f"scalarisation must be one of {SCALARISATIONS}.")
+        parts = []
+        for name, weight in zip(names, weights):
+            scale = self.scales.get(name, TermScale())
+            raw = torch.tensor(
+                self.terms[name].value(self.ctx, tokens), dtype=torch.float64
+            )
+            parts.append((weight, float(scale.z(raw)), scale.ideal))
+        if scalarisation == "weighted_sum":
+            return sum(w * z for w, z, _ in parts)
+        active = [w * (z - ideal) for w, z, ideal in parts if w > 0]
+        if not active:
+            raise ValueError("Tchebycheff needs at least one positive weight.")
+        return max(active)
+
     def best_assignment(
         self,
         tokens: torch.Tensor,
