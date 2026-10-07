@@ -28,8 +28,10 @@ jobs:
           python-version: "3.12"
       - name: Install test dependencies
         run: |
-          pip install --index-url https://download.pytorch.org/whl/cpu torch
-          pip install numpy pytest ruff
+          # Pinned to the versions the tests and lint were developed against; a newer ruff
+          # enables more default rules than foundry/pyproject.toml was written for.
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.12.1
+          pip install numpy==2.4.1 pytest==9.0.2 ruff==0.14.13
       - name: Ruff
         run: |
           ruff check --config ../../pyproject.toml src/mpnn/ph tests/ph
