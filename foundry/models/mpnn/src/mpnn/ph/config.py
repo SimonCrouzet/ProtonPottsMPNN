@@ -34,16 +34,39 @@ _TOP_LEVEL = {
     "designable",
     "allow_bare_titratable",
 }
-_DESIGNABLE = {"chains", "include", "exclude"}
+_DESIGNABLE = {"chains", "include", "exclude", "near"}
+_NEAR = {"sites", "k", "max_mutations"}
+
+
+@dataclass(frozen=True)
+class NearSpec:
+    """Keep only residues coupled to ``sites`` in the model's contact graph.
+
+    ``k`` caps each site's neighbours (0 = its full list); ``max_mutations`` caps the total
+    number of designable positions, keeping the closest (0 = no cap). The sites may be on
+    either chain, for example a titratable residue on the target.
+    """
+
+    sites: List[str]
+    k: int = 0
+    max_mutations: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.sites:
+            raise ValueError("designable.near needs at least one site.")
+        if self.k < 0 or self.max_mutations < 0:
+            raise ValueError("designable.near: k and max_mutations must be >= 0.")
 
 
 @dataclass(frozen=True)
 class DesignableSpec:
-    """Which residues may change: whole chains, plus explicit adds and removals."""
+    """Which residues may change: chains plus adds and removals, optionally restricted
+    to the neighbourhood of chosen sites."""
 
     chains: List[str] = field(default_factory=list)
     include: List[str] = field(default_factory=list)  # sites like "A:12"
     exclude: List[str] = field(default_factory=list)
+    near: Optional[NearSpec] = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +107,12 @@ class SwitchDesignConfig:
         unknown = set(designable_cfg) - _DESIGNABLE
         if unknown:
             raise ValueError(f"Unknown designable keys: {sorted(unknown)}")
+        if designable_cfg.get("near") is not None:
+            near_cfg = dict(designable_cfg["near"])
+            unknown = set(near_cfg) - _NEAR
+            if unknown:
+                raise ValueError(f"Unknown designable.near keys: {sorted(unknown)}")
+            designable_cfg["near"] = NearSpec(**near_cfg)
         if not cfg.get("terms"):
             raise ValueError(
                 "The config needs a 'terms' section with at least one term."
