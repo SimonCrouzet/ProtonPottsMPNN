@@ -4,7 +4,12 @@ from typing import Dict, List, Sequence, Tuple
 
 import torch
 
+from mpnn.ph.binding import SystemView
 from mpnn.ph.potentials import BlockPotentials, probe_block_potentials
+
+V = 4
+BINDER = [0, 1, 2]
+RECEPTOR = [3, 4, 5]
 
 
 class SyntheticPotts:
@@ -51,3 +56,44 @@ class SyntheticPotts:
 def all_pairs(positions: Sequence[int]) -> List[Tuple[int, int]]:
     """Directed edges i->j for every ordered pair of distinct positions."""
     return [(i, j) for i in positions for j in positions if i != j]
+
+
+class IdealComplex:
+    """H_complex = H_binder + H_receptor + H_interface, exactly separable by design."""
+
+    def __init__(self, binder_seed, receptor_seed, interface_seed, internal_scale=1.0):
+        self.binder = SyntheticPotts(
+            3, V, all_pairs(range(3)), binder_seed, internal_scale
+        )
+        self.receptor = SyntheticPotts(
+            3, V, all_pairs(range(3)), receptor_seed, internal_scale
+        )
+        gen = torch.Generator().manual_seed(interface_seed)
+        self.interface = {
+            (i, j): torch.randn(V, V, generator=gen, dtype=torch.float64)
+            for i in BINDER
+            for j in RECEPTOR
+        }
+
+    def H_interface(self, tokens):
+        return sum(
+            float(t[int(tokens[i]), int(tokens[j])])
+            for (i, j), t in self.interface.items()
+        )
+
+    def H_of(self, tokens):
+        return (
+            self.binder.H_of(tokens[BINDER])
+            + self.receptor.H_of(tokens[RECEPTOR])
+            + self.H_interface(tokens)
+        )
+
+    def block_potentials(self, tokens, block):
+        return probe_block_potentials(self.H_of, tokens, block, V)
+
+    def views(self):
+        return (
+            SystemView(self, range(6), V),
+            SystemView(self.binder, BINDER, V),
+            SystemView(self.receptor, RECEPTOR, V),
+        )
