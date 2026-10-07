@@ -39,6 +39,8 @@ class DesignRecord:
     scalarised: float  # value under the producing run's weights
     front: Optional[int] = None  # Pareto front index (pareto mode); 0 = non-dominated
     selected: bool = False
+    # term values in each target state (ensemble runs); term_values holds the reduced ones
+    per_state: Optional[Dict[str, Dict[str, float]]] = None
 
 
 @dataclass
@@ -124,6 +126,11 @@ def run_search(
                 run_index=run_index,
                 seed_index=seed_index,
                 scalarised=result.value,
+                per_state=(
+                    objective.per_state_values(result.tokens)
+                    if hasattr(objective, "per_state_values")
+                    else None
+                ),
             )
     records = list(pooled.values())
     out = SearchResult(plan=plan, records=records)

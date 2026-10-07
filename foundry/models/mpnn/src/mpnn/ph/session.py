@@ -23,6 +23,7 @@ from mpnn.ph.binding import (
     make_binding_model,
 )
 from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
+from mpnn.ph.ensemble import EnsembleMember, EnsembleObjective
 from mpnn.ph.neighbourhood import near_positions
 from mpnn.ph.objective import Objective, TermContext
 from mpnn.ph.report import site_report
@@ -244,10 +245,8 @@ def _no_options(name: str, options: Mapping[str, Any]) -> None:
         raise ValueError(f"{name} takes no binding_options (got {sorted(options)}).")
 
 
-def run_switch_design(
-    inputs: DesignInputs, config: SwitchDesignConfig
-) -> SwitchDesignRun:
-    """Resolve the states, build the objective and run the planned search."""
+def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
+    """Resolve one structure's states and build its objective and designable set."""
     n_positions = len(inputs.tokens)
     vocab_size = len(inputs.table)
     site_index = site_index_from_arrays(inputs.chain_ids, inputs.res_ids)
@@ -279,10 +278,14 @@ def run_switch_design(
         sorted(config.spec.sites()),
         inputs.neighbour_index,
     )
+    return objective, conditions, designable
+
+
+def _search(objective, inputs, designable, config) -> SearchResult:
     valid_mask = torch.tensor(
         inputs.table.design_mask(config.allow_bare_titratable), dtype=torch.bool
     )
-    result = run_search(
+    return run_search(
         objective,
         inputs.tokens,
         designable,
@@ -296,4 +299,128 @@ def run_switch_design(
         max_rounds=config.max_rounds,
         n_select=config.n_select,
     )
+
+
+def run_switch_design(
+    inputs: DesignInputs, config: SwitchDesignConfig
+) -> SwitchDesignRun:
+    """Resolve the states, build the objective and run the planned search."""
+    objective, conditions, designable = _prepare_state(inputs, config)
+    result = _search(objective, inputs, designable, config)
     return SwitchDesignRun(result, objective, designable, conditions, inputs)
+
+
+# ---- several target states sharing one binder ------------------------------------------
+@dataclass
+class EnsembleRun(SwitchDesignRun):
+    """A run over several target states; ``inputs`` and ``conditions`` are the first state's."""
+
+    members: Dict[str, EnsembleMember]
+
+    def to_rows(self, chain: str, reference_sequence: Optional[str] = None):
+        """As :meth:`SwitchDesignRun.to_rows`, plus ``term_<name>@<state>`` columns."""
+        rows = super().to_rows(chain, reference_sequence)
+        for row, record in zip(rows, self.result.records):
+            for state, values in (record.per_state or {}).items():
+                for term, value in values.items():
+                    row[f"term_{term}@{state}"] = value
+        return rows
+
+    def site_report(self, record, beta: Optional[float] = None):
+        """The per-site report of every target state, with a ``state`` column."""
+        rows = []
+        for member in self.members.values():
+            tokens = self.objective.tokens_for(member, record.tokens)
+            for row in site_report(
+                member.objective.ctx, member.conditions, member.inputs, tokens, beta
+            ):
+                rows.append({"state": member.name, **row})
+        return rows
+
+
+def _binder_keys(inputs: DesignInputs) -> Dict[SiteKey, int]:
+    return {
+        SiteKey(str(inputs.chain_ids[p]), int(inputs.res_ids[p])): int(p)
+        for p in inputs.binder_positions
+    }
+
+
+def _check_shared_binder(
+    reference_name: str,
+    reference: DesignInputs,
+    name: str,
+    inputs: DesignInputs,
+) -> Dict[int, int]:
+    """Map reference binder positions to ``inputs``' and check the binder really is shared."""
+    if inputs.table.names != reference.table.names:
+        raise ValueError(
+            f"State {name!r} uses a different vocabulary from {reference_name!r}."
+        )
+    ref_keys, keys = _binder_keys(reference), _binder_keys(inputs)
+    if set(ref_keys) != set(keys):
+        raise ValueError(
+            f"State {name!r} has different binder residues from {reference_name!r}; "
+            "the binder must be shared."
+        )
+    different = [
+        str(k)
+        for k in ref_keys
+        if reference.parents[ref_keys[k]] != inputs.parents[keys[k]]
+    ]
+    if different:
+        raise ValueError(
+            f"State {name!r}: the binder sequence differs from {reference_name!r} at {different[:5]}."
+        )
+    return {ref_keys[k]: keys[k] for k in ref_keys}
+
+
+def run_switch_design_ensemble(
+    inputs_by_state: Mapping[str, DesignInputs], config: SwitchDesignConfig
+) -> EnsembleRun:
+    """Design one binder against several target states, one complex per state.
+
+    The first state is the reference: designed tokens use its indexing and its starting
+    binder sequence. Every state must contain the same binder (same residues and
+    sequence); the conditions' sites must exist in every state. Terms are evaluated per
+    state and reduced by ``config.target_reduce`` (``max`` = worst state).
+    """
+    if not inputs_by_state:
+        raise ValueError("Need at least one target state.")
+    names = list(inputs_by_state)
+    reference_name, reference = names[0], inputs_by_state[names[0]]
+    members: Dict[str, EnsembleMember] = {}
+    designable_keys = set()
+    reference_keys = _binder_keys(reference)
+    for name in names:
+        inputs = inputs_by_state[name]
+        position_map = (
+            {p: p for p in reference_keys.values()}
+            if name == reference_name
+            else _check_shared_binder(reference_name, reference, name, inputs)
+        )
+        try:
+            objective, conditions, designable = _prepare_state(inputs, config)
+        except (ValueError, KeyError) as err:
+            raise type(err)(f"State {name!r}: {err}") from None
+        reverse = {v: k for k, v in position_map.items()}
+        outside = [p for p in designable if p not in reverse]
+        if outside:
+            raise ValueError(
+                f"State {name!r}: designable positions {outside[:5]} are not shared binder "
+                "residues; only the shared binder can be designed in an ensemble."
+            )
+        designable_keys |= {reverse[p] for p in designable}
+        members[name] = EnsembleMember(
+            name, objective, conditions, inputs, inputs.tokens.clone(), position_map
+        )
+    objective = EnsembleObjective(list(members.values()), reduce=config.target_reduce)
+    designable = sorted(designable_keys)
+    result = _search(objective, reference, designable, config)
+    return EnsembleRun(
+        result,
+        objective,
+        designable,
+        members[reference_name].conditions,
+        reference,
+        members,
+    )
