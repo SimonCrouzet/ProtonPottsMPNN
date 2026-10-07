@@ -33,6 +33,7 @@ _TOP_LEVEL = {
     "n_select",
     "designable",
     "allow_bare_titratable",
+    "target_reduce",
 }
 _DESIGNABLE = {"chains", "include", "exclude", "near"}
 _NEAR = {"sites", "k", "max_mutations"}
@@ -86,6 +87,8 @@ class SwitchDesignConfig:
     base_seed: int = 0
     n_select: Optional[int] = None
     allow_bare_titratable: List[str] = field(default_factory=list)
+    # several target states: "max" optimises the worst state, "mean" the average
+    target_reduce: str = "max"
 
     def __post_init__(self) -> None:
         if self.block_size < 1 or self.max_rounds < 1 or self.n_seeds < 1:
@@ -96,6 +99,8 @@ class SwitchDesignConfig:
             raise ValueError("n_select must be >= 1 when given.")
         if self.divisions < 1:
             raise ValueError("divisions must be >= 1.")
+        if self.target_reduce not in ("max", "mean"):
+            raise ValueError("target_reduce must be 'max' or 'mean'.")
         self.plan()  # validates terms, search mode and scalarisation now
 
     @classmethod
@@ -132,6 +137,7 @@ class SwitchDesignConfig:
                 "base_seed",
                 "n_select",
                 "allow_bare_titratable",
+                "target_reduce",
             )
             if key in cfg
         }
