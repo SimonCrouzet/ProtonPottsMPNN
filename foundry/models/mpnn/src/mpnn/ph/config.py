@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
 from mpnn.ph.objective import SearchPlan, build_terms, plan_search
+from mpnn.ph.report import validate_report_token_shapes
 from mpnn.ph.states import StateSpec
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ _TOP_LEVEL = {
     "designable",
     "allow_bare_titratable",
     "target_reduce",
+    "report_tokens",
 }
 _DESIGNABLE = {"chains", "include", "exclude", "near"}
 _NEAR = {"sites", "k", "max_mutations"}
@@ -89,6 +91,9 @@ class SwitchDesignConfig:
     allow_bare_titratable: List[str] = field(default_factory=list)
     # several target states: "max" optimises the worst state, "mean" the average
     target_reduce: str = "max"
+    # how site_report compares states a vocabulary names ambiguously (v3/v4 have two neutral
+    # His tautomers): {"HIS": {"deprotonated": ["HID", "HIE"]}}; a list is averaged
+    report_tokens: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.block_size < 1 or self.max_rounds < 1 or self.n_seeds < 1:
@@ -99,6 +104,7 @@ class SwitchDesignConfig:
             raise ValueError("n_select must be >= 1 when given.")
         if self.divisions < 1:
             raise ValueError("divisions must be >= 1.")
+        validate_report_token_shapes(self.report_tokens)
         if self.target_reduce not in ("max", "mean"):
             raise ValueError("target_reduce must be 'max' or 'mean'.")
         self.plan()  # validates terms, search mode and scalarisation now
@@ -138,6 +144,7 @@ class SwitchDesignConfig:
                 "n_select",
                 "allow_bare_titratable",
                 "target_reduce",
+                "report_tokens",
             )
             if key in cfg
         }
