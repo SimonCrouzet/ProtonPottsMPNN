@@ -187,3 +187,19 @@ def test_describe_renders_one_chain_of_a_design():
     assert run.describe(best, "B")["canonical_sequence"] == "AHA"
     with pytest.raises(ValueError, match="not in the structure"):
         run.describe(best, "Z")
+
+
+def test_to_rows_lists_ranked_designs_with_terms_and_mutations():
+    config = make_config(allow_bare_titratable=["HIS"], search="pareto", divisions=2)
+    run = run_switch_design(make_inputs(), config)
+    rows = run.to_rows("A")
+    assert [r["rank"] for r in rows] == list(range(len(run.result.records)))
+    for row in rows:
+        assert {"canonical_sequence", "n_mutations", "front", "selected"} <= set(row)
+        assert {"term_stability", "term_potency", "term_switch"} <= set(row)
+        assert row["mode"] == "pareto"
+    input_sequence = "HAA"  # the binder tokens of the toy structure
+    first = rows[0]["canonical_sequence"]
+    assert rows[0]["n_mutations"] == sum(a != b for a, b in zip(input_sequence, first))
+    with pytest.raises(ValueError, match="chain length"):
+        run.to_rows("A", reference_sequence="HA")
