@@ -35,19 +35,24 @@ The project has two halves, and this folder is self-contained for both:
 ```bash
 cd ProtonPottsMPNN
 ./install.sh                     # uv venv (Python 3.12) + uv pip install -e ./foundry + extras
+./install.sh --clear             # rebuild an existing venv from scratch
+VENV_DIR=~/venvs/ppm ./install.sh   # put the venv elsewhere (default .venv)
 source .venv/bin/activate
 ```
 
-`install.sh` runs `uv venv --clear` then a single `uv pip install -e ./foundry -r requirements-extra.txt`
-(the one resolution keeps both the foundry core — torch, lightning, atomworks[ml] — and the extras — the
-FLAML stack, jupyter, propka), verifies `import mpnn` resolves inside this folder, and registers the venv as
-a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there are no `sys.path` hacks.
+`install.sh` creates the venv — it **refuses to overwrite** an existing one unless you pass `--clear` — then a
+single `uv pip install -e ./foundry -r requirements-extra.txt` (the one resolution keeps both the foundry core —
+torch, lightning, atomworks[ml] — and the extras — the FLAML stack, jupyter, propka), verifies `import mpnn`
+resolves inside this folder (whatever the folder is called), and registers the venv as a Jupyter kernel
+`ProtonPottsMPNN (venv)`. Scripts just `import mpnn`; there are no `sys.path` hacks.
 
 - **Python 3.12** is required (`mpnn`/`foundry` pin `>=3.12,<3.13`).
-- **HBPLUS** is an external C binary (not pip-installable) used by the **labeller** and the **fold scoring**
-  to read H-bond geometry. Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`). The
-  design engine needs it too, because featurising a structure (`prepare_potts_input`) runs HBPLUS. The
-  explicit-state design core in `mpnn.ph` does not; it only needs torch and numpy.
+- **Line endings** are LF (`.gitattributes`), so a checkout on Windows or `/mnt/d` runs `install.sh` and the SLURM
+  scripts unchanged.
+- **HBPLUS** is an external C binary (not pip-installable) used by the **labeller**, the **fold scoring** and
+  the **design engine** (`prepare_potts_input` runs it on every structure it featurises) to read H-bond
+  geometry. Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`). `mpnn.ph` itself needs
+  only torch + numpy.
 - Let the install finish uninterrupted — a killed `uv pip install` can leave the venv half-written (package
   metadata present, module files missing). If imports fail oddly, repair in place with
   `uv pip install --python .venv/bin/python --reinstall -e ./foundry -r requirements-extra.txt`.
@@ -103,7 +108,7 @@ internal design campaigns.
 
 ```bash
 python inference/design_ph.py       # -> inference/outputs/ (see below)
-# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (.venv)" kernel)
+# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (venv)" kernel)
 ```
 ```python
 from mpnn.inference_engines.potts_mpnn_ph import PottsMPNNPHEngine, PHDesignCriteria
@@ -122,13 +127,16 @@ crit = PHDesignCriteria(
 design_set = engine.run_ph_redesign(atom_array=aa, binder_chain="A", criteria_list=[crit], seed=0)
 ```
 
-**Direction.** The selectivity term is Σ(e_P − e_D) over the pinned centres, evaluated in the bound
-complex, and the optimiser lowers it. The bound state therefore prefers the protonated centre: binding is
-stronger at low pH and weakens once the centre loses its proton. `run_ph_redesign` has no switch for the
-opposite direction; `run_switch_design` (below) does, by swapping which condition is `on`. For a design
-sweep, `PHDesignCriteria.interface_distance` (default 6 Å, CA–CA) sets the cutoff of the `interface`
-placement region: raise it when loops reach over the target, otherwise the region can come out empty.
-`design_set.to_rows(reference_sequence=...)` returns one plain dict per design (`canonical_sequence`,
+**Direction.** `selective_energy` = Σ(e_P − e_D) over the pinned centres, in the bound complex, and the
+optimiser **lowers** it → the bound state prefers the protonated centre → binding is **stronger at low pH**
+and weakens once the centre loses its proton. The opposite direction is not available here; use
+`run_switch_design` (below) and swap `on` / `off`.
+
+**Interface region.** `PHDesignCriteria.interface_distance` (default 6 Å, CA–CA) sets the `interface`
+placement region — raise it when loops reach over the target, otherwise the region can come out empty (a
+warning is logged).
+
+**Plain rows.** `design_set.to_rows(reference_sequence=…)` → one dict per design (`canonical_sequence`,
 `centers`, `n_mutations`, `selective_energy`, `potts_energy`, …).
 
 The notebook opens up the internals: **placement** (which state goes where, and how many centres — acids to
@@ -140,6 +148,9 @@ use) — the engine reads a path *or* an AtomArray.
 `combined_lambda` sweep from 0 (pure stability) to 1 (pure selectivity), fanned across a CPU fork pool
 (`n_jobs`). The notebook runs `N_DESIGNS` of them and plots each in **(stability, selectivity)** space with the
 **Pareto front** marked (`pareto_front.png`). Set `N_DESIGNS = 20` for a denser front.
+
+**Reproducible.** The same `seed` returns the same designs for any `n_jobs` (results come back in task
+order). Two designs that share an id but differ in sequence are both kept, the second as `<id>~2`.
 
 **Fold the Pareto designs.** It then picks `N_FOLD` designs off the Pareto front and folds each with the
 **packaged RF3 engine** (`fold_rf3.py`, from_target templating: the target chain is templated, the binder is
@@ -168,72 +179,89 @@ designs (`pareto_fold_manifest.json`) ready to fold elsewhere and scores a shipp
 
 ---
 
-## States on both sides, either direction (`mpnn.ph`)
+## Switch design with explicit states (`mpnn.ph`)
 
-`run_ph_redesign` pins protonated centres on the binder, which favours the protonated state inside the
-complex. `PottsMPNNPHEngine.run_switch_design` instead takes **conditions** (for example pH 7.4 and pH 6.5)
-that name the protonation state of any residue on either chain, so a binder that binds at 7.4 but not 6.5,
-and its reverse, differ only by swapping which condition is `on`. The receptor's titratable residues carry
-states in each condition just like the binder's.
+`run_ph_redesign` pins protonated centres on the **binder**. `PottsMPNNPHEngine.run_switch_design` takes
+**conditions** instead (say pH 7.4 and pH 6.5) that name the protonation state of **any residue on either
+chain** — so a binder that binds at 7.4 but not 6.5, and the reverse, differ only by which condition is `on`,
+and titratable residues on the **target** switch just like the binder's.
 
-The objective combines three terms, each optional (a weight of 0 switches it off):
+**Three terms, each optional** (weight 0 = off), lower is better:
 
-| term | meaning |
-|------|---------|
-| `stability` | Potts energy of the binder alone, reduced over conditions by `max` (worst case) or `mean` |
+| term | what it scores |
+|------|----------------|
+| `stability` | Potts energy of the binder alone in each condition → `max` (worst condition, default) or `mean` |
 | `potency` | binding energy in the `on` condition |
-| `switch` | how much weaker binding is in `off` than in `on`; an optional `off_margin` stops rewarding the gap once it is wide enough |
+| `switch` | how much weaker binding is in `off` than in `on`; `off_margin` stops rewarding the gap once it is wide enough |
 
-`binding_model` chooses how binding energy is computed: `state_binding` (default, complex minus binder alone
-minus receptor alone, so only the interface contribution counts), `complex_gap` (the complex energy), or
-`linked_equilibrium` (experimental: averages over the protonation states the free partners populate at each
-condition's pH; its `beta` is uncalibrated). One active term, or one explicit weight vector, is an ordinary
-single-objective run. `search: pareto` with two or more active terms sweeps weight vectors and returns the
-Pareto set instead.
+**Binding energy** (`binding_model`):
+
+| model | binding energy |
+|-------|----------------|
+| `state_binding` (default) | complex − binder alone − receptor alone → only the **interface** contribution counts |
+| `complex_gap` | the complex energy |
+| `linked_equilibrium` | experimental — averages over the protonation states the free partners populate at each condition's pH; `beta` is uncalibrated |
+
+**One run, or a Pareto sweep — your choice.** One active term, or one explicit weight vector → an ordinary
+single-objective run. `search: "pareto"` with two or more active terms sweeps weight vectors and returns the
+**Pareto set** (`front`, `selected`, hypervolume).
 
 ```python
 config = {
-    "conditions": {
-        "on":  {"ph": 7.4, "states": {"A:12": "deprotonated", "B:57": "deprotonated"}},
-        "off": {"ph": 6.5, "states": {"A:12": "protonated",   "B:57": "protonated"}},
+    "conditions": {                                           # state of any residue, either chain
+        "on":  {"ph": 7.4, "states": {"A:12": "deprotonated", "B:409": "deprotonated"}},
+        "off": {"ph": 6.5, "states": {"A:12": "protonated",   "B:409": "protonated"}},
     },
     "terms": {"stability": {"weight": 0.3}, "potency": {"weight": 0.3},
               "switch": {"weight": 0.4, "off_margin": 2.0}},
-    "designable": {"chains": ["A"]},       # residues named in a condition are never redesigned
+    "designable": {"chains": ["A"],                           # residues named in a condition are never redesigned
+                   "near": {"sites": ["B:409"], "k": 16, "max_mutations": 20}},   # optional: only around B:409
     "binding_model": "state_binding",      # | "complex_gap" | "linked_equilibrium"
     "search": "single",                    # | "pareto"
+    "target_reduce": "max",                # several target states: "max" = worst state | "mean"
 }
 run = engine.run_switch_design(atom_array=aa, binder_chain="A", config=config)
 best = run.result.records[0]
 run.describe(best, "A")                    # canonical sequence + token names of the binder
+run.to_rows("A")                           # one dict per design: sequence, n_mutations, term_<name>, front, …
+run.site_report(best)                      # per condition and site: complex vs free-partner preference
 ```
 
-To redesign only around a residue, add `"near": {"sites": ["B:409"], "k": 16, "max_mutations": 20}` under
-`designable`. The sites may be on the target; the binder positions kept are those the model couples to them,
-the same neighbourhood that `neighbour_k` and `max_mutations` define in `run_ph_redesign`. After a run,
-`run.site_report(best)` lists, for each condition and titratable site, the state the condition imposes
-(`state_token`), the protonated-versus-deprotonated energy gap in the complex and in the free partners
-(`gap_complex`, `gap_free`) and their difference (`binding_gap`; negative means binding favours the protonated
-state, raising its apparent pKa), and with `linked_equilibrium` the apparent pKa of the free and the bound
-state. All values are in model units.
+**Redesign around a residue.** `designable.near` keeps only the binder positions the model couples to the
+named sites — the same neighbourhood `neighbour_k` / `max_mutations` define in `run_ph_redesign`, except that
+a site can now be a **target** residue (`k` caps each site's neighbours, `max_mutations` the total).
 
-To design against several target states (for example human and mouse), pass one complex per state:
-`engine.run_switch_design_ensemble(structures={"human": aa_h, "mouse": aa_m}, binder_chain="A", config=config)`.
-The complexes must contain the same binder (same residues and sequence), and the sites named in the conditions
-must exist in each complex with the same numbering. Every term is evaluated in every state and reduced by
-`target_reduce`: `max` (default) optimises the worst state, `mean` the average. Each record keeps the per-state
-values (`record.per_state`, and `term_<name>@<state>` columns in `to_rows`), and `site_report` covers every state.
+**Free-state reference.** `run.site_report(best)` → one row per condition and titratable site:
+
+| column | meaning |
+|--------|---------|
+| `state_token` | the state the condition imposes (`HIS-S`, `ASP-P`, …) |
+| `gap_complex` · `gap_free` | protonated − deprotonated energy of the site in the complex · in the free partners |
+| `binding_gap` | their difference; **negative** = binding favours the protonated state → its apparent pKa **rises** on binding |
+| `apparent_pka_free` · `_bound` · `_shift` | `linked_equilibrium` only — pKa implied by the protonated fraction at the condition's pH |
+
+All values are in model units (`beta` is uncalibrated).
+
+**Several target states.** `engine.run_switch_design_ensemble(structures={"human": aa_h, "mouse": aa_m},
+binder_chain="A", config=config)` designs **one binder against several complexes**. The binder must be the
+same in every complex (same residues, same sequence) and the sites named in the conditions must exist in each,
+with the same numbering. Every term is evaluated in every state, then combined by `target_reduce`:
+
+| `target_reduce` | a term takes the value of … |
+|-----------------|-----------------------------|
+| `max` (default) | the **worst** state → the design must hold up in all of them |
+| `mean` | the **average** over states |
+
+The reduction is per term, so the worst state for `potency` need not be the worst for `switch`. Each record
+keeps the per-state values (`record.per_state`, `term_<name>@<state>` columns in `to_rows`), and `site_report`
+covers every state.
 
 Unknown config keys raise instead of being ignored. Designed positions take only non-titratable residues
-unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state unspecified"). The design core is
-unit-tested on synthetic Potts tables without the heavy environment:
+unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state unspecified"). Tests:
 
 ```bash
 cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q
 ```
-
-`run_switch_design` itself has not yet been run end to end on a real structure; it needs HBPLUS and the full
-environment.
 
 ---
 
@@ -241,13 +269,14 @@ environment.
 
 | folder | what it holds |
 |--------|---------------|
-| [`foundry/`](foundry/) | a full verbatim copy of the `ph/foundry` monorepo. The `mpnn` package is the deliverable: the model (`model/pottsmpnn.py`), transforms, the **deployed FLAML labeller** (`transforms/ev6/`), the **design engine** (`inference_engines/potts_mpnn_ph.py`), and `prepare_potts_input` (`potts_inference.py`). `models/{rf3,rfd3,rfd3na}` come along but their multi-GB weights are not shipped. |
+| [`foundry/`](foundry/) | a copy of the `ph/foundry` monorepo; this fork edits the `mpnn` package only. The `mpnn` package is the deliverable: the model (`model/pottsmpnn.py`), transforms, the **deployed FLAML labeller** (`transforms/ev6/`), the **design engine** (`inference_engines/potts_mpnn_ph.py`), and `prepare_potts_input` (`potts_inference.py`). `models/{rf3,rfd3,rfd3na}` come along but their multi-GB weights are not shipped. |
 | [`labeller/`](labeller/) | the FLAML protonation labeller: `label_pdb.py` (example above), the train path `01…05_*.py`, `pr_curve.py` (AUPR), and the trained models. |
 | [`inference/`](inference/) | `design_ph.ipynb` / `.py` (example above) + `design_placement_scan.py` (the engine's per-design placement plot) + `fold_rf3.py` (fold a design with the packaged RF3 engine; needs `RF3_CKPT` + GPU) + `examples/` (a PD-L1 seed binder + a real RF3 fold). |
 | [`scoring/`](scoring/) | fold read-outs: `charge_clash` (geometry) + `annotate` (pH-sensitive H-bonds / salt bridges via HBPLUS+PLIP). `score_example.py` is a runnable demo. |
 | [`benchmarks/`](benchmarks/) | PKAD (pKa), MegaScale/FireProt (stability), binding AP, within-backbone, and `placement_by_class.py` (library-wide placement propensity) — all data in-folder. |
 | [`training/`](training/) | PottsMPNN + H-bond-head SLURM launchers — **reference** (cluster-specific; the trainer itself is `mpnn.train`). |
 | [`checkpoints/`](checkpoints/) | the v6 design checkpoint (21 MB). |
+| [`.github/`](.github/workflows/ph-tests.yml) | CI: ruff + the `mpnn.ph` tests on every pull request. |
 
 ### Where the core code lives
 
@@ -256,6 +285,7 @@ environment.
 | **PottsMPNN implementation** (encoder → Potts field + pairwise couplings) | [`model/pottsmpnn.py`](foundry/models/mpnn/src/mpnn/model/pottsmpnn.py) · loss: [`loss/potts_loss.py`](foundry/models/mpnn/src/mpnn/loss/potts_loss.py) · train entry: [`train.py`](foundry/models/mpnn/src/mpnn/train.py) |
 | **Transformation pipeline** (structure → model input: parse, HBPLUS/SASA features, protonation-vocab encoding) | [`potts_inference.py`](foundry/models/mpnn/src/mpnn/potts_inference.py) (`prepare_potts_input`) · transforms: [`transforms/`](foundry/models/mpnn/src/mpnn/transforms/) (FLAML labeller in [`transforms/ev6/`](foundry/models/mpnn/src/mpnn/transforms/ev6/)) |
 | **Inference / design engine** (placement + block-descent pH-redesign) | [`inference_engines/potts_mpnn_ph.py`](foundry/models/mpnn/src/mpnn/inference_engines/potts_mpnn_ph.py) (`PottsMPNNPHEngine`, `PHDesignCriteria`) |
+| **Switch design with explicit states** (conditions on either chain, terms, binding models, Pareto, several target states) | [`ph/`](foundry/models/mpnn/src/mpnn/ph/) · entry points `run_switch_design` / `run_switch_design_ensemble` in `potts_mpnn_ph.py` · tests: [`tests/ph/`](foundry/models/mpnn/tests/ph/) |
 
 ### Everything else, one command each
 
@@ -263,19 +293,24 @@ environment.
 |------------|-----|-----|
 | **label a PDB** | `HBPLUS_PATH=… python labeller/label_pdb.py` | `labeller/outputs/protonation_labels.csv` |
 | **design a binder** | `python inference/design_ph.py` | placement / trajectory / Pareto PNGs + `designs*.fasta` / `.tsv` (with protonation states) |
+| **switch design, explicit states** | `engine.run_switch_design(atom_array=aa, binder_chain="A", config=config)` (see above) | ranked designs: `run.to_rows("A")`, `run.site_report(best)` |
+| **test `mpnn.ph`** | `cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q` | pass / fail |
 | **retrain the labeller** | `python labeller/05_train_one.py HIS features 1200` | `labeller/models/automl_feature_HIS/` |
 | **labeller AUPR** | `python labeller/pr_curve.py` | `labeller/{his,acid}_pr.png` (AP HIS 0.70, acids 0.33) |
 | **score a fold** | `HBPLUS_PATH=… python scoring/score_example.py` | pH-bond / charge-clash counts |
-| **placement by class** (library-wide) | `python benchmarks/placement_by_class.py` | `benchmarks/placement_by_class.png` |
-| **pKa benchmark** | `PROTON_ROOT=$PWD python -m mpnn.scripts.eval_pkad --checkpoints checkpoints/…/epoch-0125.ckpt` | `pkad_*.csv` + scatter |
+| **placement by class** (library-wide) | `python benchmarks/placement_by_class.py` — needs `benchmarks/data/placement_scan.parquet`, **not shipped** | `benchmarks/placement_by_class.png` |
+| **pKa benchmark** | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6` | `<ckpt_dir>/eval_pkad/` (`pkad_*.csv` + scatter) |
 | **stability benchmark** | `EV6_OUT_SUBDIR=his0.3_acid0.06 python benchmarks/stability_benchmark.py` | ΔΔG CSVs (GPU recommended) |
 | **3-way bar plot** | `EV6_OUT_SUBDIR=his0.3_acid0.06 python benchmarks/benchmark_barplot.py` | recovery + MegaScale + FireProt figure |
 | **binding AP** | `python benchmarks/binding_ap.py` | `benchmarks/results/summary_global_ap.png` |
-| **within-backbone** | `python benchmarks/within_backbone.py` | `within_backbone_inverse_outcomes.png` |
+| **within-backbone** | `python benchmarks/within_backbone.py` — needs `egfr_pdl1_*.parquet`, `optimized_sweep_scores.parquet`, `curated_designs.parquet`, **not shipped** | `within_backbone_inverse_outcomes.png` |
 
-Benchmark scripts derive the package root from their location (override with `PROTON_ROOT=/abs/path`). The
-model-quality benchmarks (PKAD, stability) compute from raw structures; the design benchmarks (binding,
-within-backbone) read shipped parquets (regenerating them needs the Boltz-2 / RF3 oracles).
+Benchmark scripts derive the package root from their location (override with `PROTON_ROOT=/abs/path`); `eval_pkad`
+takes its paths as flags (its defaults point at the original cluster) and **`--extended_vocab` must match the
+checkpoint** — it defaults to `v4`, so pass `v6` for the shipped one. The model-quality benchmarks (PKAD,
+stability) compute from raw structures; **binding AP** reads the shipped `mb_gbind_benchmark.parquet`, whereas
+within-backbone and placement-by-class read parquets that are not in the repo (regenerating them needs the
+Boltz-2 / RF3 oracles).
 
 ---
 
@@ -284,8 +319,21 @@ within-backbone) read shipped parquets (regenerating them needs the Boltz-2 / RF
 This project is released under the **MIT License** — see [`LICENSE`](LICENSE). It covers the
 Proton-PottsMPNN code authored here (`labeller/`, `inference/`, `scoring/`, `benchmarks/`, `training/`,
 `checkpoints/`, the docs, and the pH-design additions to the `mpnn` package). The bundled [`foundry/`](foundry/)
-is a verbatim copy of IPD's rc-foundry and keeps its own **BSD 3-Clause License**
+is a copy of IPD's rc-foundry (the `mpnn` package inside it carries the pH-design additions) and keeps its own
+**BSD 3-Clause License**
 ([`foundry/LICENSE.md`](foundry/LICENSE.md), © 2025 Institute for Protein Design, University of Washington).
 
 If you use this in academic work, please cite the manuscript *"pH-sensitive binder design with
 Proton-PottsMPNN"* (Jacobsen et al., 2026).
+
+---
+
+## About this fork
+
+This fork ([SimonCrouzet/ProtonPottsMPNN](https://github.com/SimonCrouzet/ProtonPottsMPNN)) is **modified by
+Simon Crouzet** from the published release
+([christian-creator/ProtonPottsMPNN](https://github.com/christian-creator/ProtonPottsMPNN), commit `09682ab`).
+What changed: **`mpnn.ph`** (explicit states on both sides, either direction, several target states, opt-in
+Pareto search), `PHDesignCriteria.interface_distance`, reproducible `n_jobs` results, `to_rows`, a setup that
+runs from a fresh checkout (LF line endings, `install.sh`, HBPLUS and import fixes), and CI. Everything else is
+as published; `git log 09682ab..` lists each change.
