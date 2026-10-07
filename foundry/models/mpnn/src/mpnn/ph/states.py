@@ -19,6 +19,10 @@ from mpnn.ph.vocab_meta import TokenTable
 logger = logging.getLogger(__name__)
 
 
+_SPEC_KEYS = ("conditions", "on", "off")
+_CONDITION_KEYS = ("states", "ph", "label")
+
+
 @dataclass(frozen=True, order=True)
 class SiteKey:
     """A residue identified by chain id and residue number (no insertion codes yet)."""
@@ -79,11 +83,32 @@ class StateSpec:
 
         ``on``/``off`` default to conditions of those names when they exist.
         """
+        unknown = set(cfg) - set(_SPEC_KEYS)
+        if unknown:
+            raise ValueError(
+                f"State spec has unknown keys {sorted(unknown)}; allowed: {list(_SPEC_KEYS)}."
+            )
         raw = cfg.get("conditions")
         if not raw:
             raise ValueError("A state spec needs at least one condition.")
         conditions: Dict[str, Condition] = {}
         for name, body in raw.items():
+            if not isinstance(body, Mapping):
+                raise ValueError(f"Condition {name!r} must be a mapping.")
+            unknown = set(body) - set(_CONDITION_KEYS)
+            if unknown:
+                raise ValueError(
+                    f"Condition {name!r} has unknown keys {sorted(unknown)}; "
+                    f"allowed: {list(_CONDITION_KEYS)}."
+                )
+            if "states" not in body:
+                raise ValueError(
+                    f"Condition {name!r} needs a 'states' mapping (it may be empty)."
+                )
+            if not isinstance(body["states"], Mapping):
+                raise ValueError(
+                    f"Condition {name!r}: 'states' must be a mapping of site to state."
+                )
             states = {
                 site if isinstance(site, SiteKey) else SiteKey.parse(site): spec
                 for site, spec in dict(body.get("states", {})).items()

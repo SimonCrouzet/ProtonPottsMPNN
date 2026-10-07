@@ -95,3 +95,38 @@ def test_ensemble_design_builds_inputs_for_each_structure(engine):
     assert list(run.members) == ["human", "mouse"]
     assert run.designable == DESIGN_BLOCK
     assert set(run.result.records[0].per_state) == {"human", "mouse"}
+
+
+@pytest.mark.parametrize("method", ["single", "ensemble"])
+@pytest.mark.parametrize(
+    "seed, base_seed, expected",
+    [(7, 3, 7), (None, 3, 3), (0, 3, 0), (None, 0, 0)],  # an explicit 0 is explicit
+)
+def test_the_seed_argument_overrides_the_configs_base_seed(
+    engine, monkeypatch, method, seed, base_seed, expected
+):
+    ctx = make_ctx(engine)
+    runner = bare_engine(engine, ctx)
+    context_seeds, search_configs = [], []
+    runner._build_context = lambda atom_array, chain, base_seed=0: (
+        context_seeds.append(base_seed) or ctx
+    )
+
+    def spy(inputs, config):
+        search_configs.append(config)
+        return "run"
+
+    monkeypatch.setattr(engine, "_run_switch_design", spy)
+    monkeypatch.setattr(engine, "_run_switch_design_ensemble", spy)
+    config = {**CONFIG, "base_seed": base_seed}
+    kwargs = {} if seed is None else {"seed": seed}
+    if method == "single":
+        runner.run_switch_design(
+            atom_array=None, binder_chain="A", config=config, **kwargs
+        )
+    else:
+        runner.run_switch_design_ensemble(
+            structures={"human": None}, binder_chain="A", config=config, **kwargs
+        )
+    assert [c.base_seed for c in search_configs] == [expected]  # the search stream
+    assert context_seeds == [expected]  # and the featurisation use the same seed

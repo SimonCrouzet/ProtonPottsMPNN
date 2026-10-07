@@ -317,6 +317,7 @@ def choose_assignment(
     """
     n = joint.ndim
     if valid_mask is not None:
+        valid_mask = valid_mask.to(joint.device)  # the mask is built on the CPU
         for axis in range(n):
             shape = [1] * n
             shape[axis] = -1
@@ -329,6 +330,8 @@ def choose_assignment(
     else:
         logits = -(flat - flat.min()) / temperature
         probs = torch.softmax(logits, dim=0)
+        if generator is not None:  # sample on the generator's device (usually the CPU)
+            probs = probs.to(generator.device)
         index = int(torch.multinomial(probs, 1, generator=generator))
     return tuple(int(i) for i in np.unravel_index(index, tuple(joint.shape)))
 

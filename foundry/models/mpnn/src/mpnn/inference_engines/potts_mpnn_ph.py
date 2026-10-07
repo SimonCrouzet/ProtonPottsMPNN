@@ -38,7 +38,7 @@ import copy
 import logging
 import multiprocessing as mp
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
@@ -659,18 +659,26 @@ class PHDesignSet(list):
         return PHDesignSet(sorted(self, key=lambda d: d.final_potts_energy))
 
     def deduped(self) -> "PHDesignSet":
-        """Drop exact repeats (same id AND same sequence); keep, under a ``~k`` id suffix, designs that
-        share an id but differ in sequence. First occurrence wins, so the order of ``self`` decides."""
-        seen: Dict[str, List[tuple]] = {}
+        """Drop exact repeats (same id AND same sequence); keep designs that share an id but differ
+        in sequence under a ``~k`` id suffix. First occurrence wins, so the order of ``self`` decides.
+
+        Every id already present in ``self`` is reserved, so a new suffix never lands on another
+        design's id, and a record that needs a new id is copied: the inputs are not modified."""
+        taken = {d.design_id() for d in self}
+        by_id: Dict[str, set] = {}
         out = PHDesignSet()
         for d in self:
             did, seq = d.design_id(), tuple(d.extended_tokens)
-            variants = seen.setdefault(did, [])
-            if seq in variants:
+            known = by_id.setdefault(did, set())
+            if seq in known:
                 continue
-            if variants:
-                d.id_suffix = f"~{len(variants) + 1}"
-            variants.append(seq)
+            if known:
+                k = 2
+                while f"{did}~{k}" in taken:
+                    k += 1
+                d = replace(d, id_suffix=d.id_suffix + f"~{k}")
+                taken.add(d.design_id())
+            known.add(seq)
             out.append(d)
         return out
 
@@ -819,6 +827,11 @@ def _binder_region_masks(proc_atom_array, token_aa, binder_chain, chainA_t, devi
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
+
+def _with_seed(config: SwitchDesignConfig, seed: Optional[int]) -> SwitchDesignConfig:
+    """One seed for a switch-design run: ``seed``, when given, overrides ``config.base_seed``."""
+    return config if seed is None else replace(config, base_seed=int(seed))
+
 
 def _to_device(obj, device):
     """Move every tensor in a nested dict/list/tuple onto ``device``."""
@@ -1109,7 +1122,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         atom_array: AtomArray,
         binder_chain: str,
         config,
-        seed: int = 0,
+        seed: Optional[int] = None,
     ) -> SwitchDesignRun:
         """Design the binder against condition-specific protonation states.
 
@@ -1117,14 +1130,16 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         them in the complex), the conditions here name the state of any residue, binder
         or receptor, at each pH, and the objective combines stability, potency and
         switch terms (see ``mpnn.ph``). ``config`` is a ``SwitchDesignConfig`` or the
-        plain dict it is parsed from.
+        plain dict it is parsed from. ``seed``, when given, overrides ``config.base_seed``;
+        the search draws from ``base_seed + 1000 * run + seed_index``.
 
         Not yet exercised end to end: the wiring below needs HBPLUS and atomworks. The
         design core (``mpnn.ph``) and the glue helpers are unit-tested on synthetic data.
         """
         if not isinstance(config, SwitchDesignConfig):
             config = SwitchDesignConfig.from_dict(config)
-        ctx = self._build_context(atom_array, binder_chain, base_seed=seed)
+        config = _with_seed(config, seed)
+        ctx = self._build_context(atom_array, binder_chain, base_seed=config.base_seed)
         return _run_switch_design(self._design_inputs(ctx, binder_chain), config)
 
     @torch.no_grad()
@@ -1134,22 +1149,26 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         structures: Dict[str, AtomArray],
         binder_chain: str,
         config,
-        seed: int = 0,
+        seed: Optional[int] = None,
     ) -> EnsembleRun:
         """Design one binder against several target states, one complex per state.
 
         ``structures`` maps a state name (for example ``"human"``, ``"mouse"``) to its
         binder-plus-target complex; every complex must hold the same binder (same residues
         and sequence) and, for the conditions' sites, the same residue numbering. The first
-        entry is the reference. Terms are reduced over states by ``config.target_reduce``
+        entry is the reference. ``seed``, when given, overrides ``config.base_seed``. Terms
+        are reduced over states by ``config.target_reduce``
         (``max`` optimises the worst state). Like :meth:`run_switch_design`, not yet run end
         to end on real structures.
         """
         if not isinstance(config, SwitchDesignConfig):
             config = SwitchDesignConfig.from_dict(config)
+        config = _with_seed(config, seed)
         inputs = {}
         for name, atom_array in structures.items():
-            ctx = self._build_context(atom_array, binder_chain, base_seed=seed)
+            ctx = self._build_context(
+                atom_array, binder_chain, base_seed=config.base_seed
+            )
             inputs[name] = self._design_inputs(ctx, binder_chain)
         return _run_switch_design_ensemble(inputs, config)
 

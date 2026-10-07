@@ -227,7 +227,8 @@ run.site_report(best)                      # per condition and site: complex vs 
 
 **Redesign around a residue.** `designable.near` keeps only the binder positions the model couples to the
 named sites — the same neighbourhood `neighbour_k` / `max_mutations` define in `run_ph_redesign`, except that
-a site can now be a **target** residue (`k` caps each site's neighbours, `max_mutations` the total).
+a site can now be a **target** residue (`k` caps each site's neighbours, `max_mutations` the total — one cap on
+the shared set when there are several target states).
 
 **Free-state reference.** `run.site_report(best)` → one row per condition and titratable site:
 
@@ -254,8 +255,21 @@ The reduction is per term, so the worst state for `potency` need not be the wors
 keeps the per-state values (`record.per_state`, `term_<name>@<state>` columns in `to_rows`), and `site_report`
 covers every state.
 
-Unknown config keys raise instead of being ignored. Designed positions take only non-titratable residues
-unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state unspecified"). Tests:
+**Seeds.** `seed=` on `run_switch_design` / `run_switch_design_ensemble`, when given, overrides `base_seed` in the
+config (an explicit `0` too); the search draws from `base_seed + 1000·run + seed_index`, so the same seed gives
+the same designs.
+
+**Legacy vocabularies.** In a v3/v4-style vocabulary a state can name several tokens (two neutral His tautomers,
+`HID` / `HIE`): name them explicitly in the conditions, and tell the report how to compare them with
+`"report_tokens": {"HIS": {"deprotonated": ["HID", "HIE"]}}` — a list is averaged (as `dep_map` did), a single
+name picks one token. Without it `site_report` stops and says the state is ambiguous.
+
+Unknown config keys raise instead of being ignored, and so do unknown keys inside a condition (`states`, `ph`,
+`label` — a typo such as `state` is an error, not an empty assignment). A switch term whose `on` and `off`
+conditions impose identical states is refused, since it would be zero for every design. Designed positions
+take only non-titratable residues — and every returned design respects that, including any native token at a
+designable position — unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state
+unspecified"). Tests:
 
 ```bash
 cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q
@@ -336,7 +350,8 @@ each one.
 |------|--------|
 | **`mpnn.ph`** | explicit states on both sides, either direction, several target states, opt-in Pareto search — see *Switch design with explicit states* |
 | **`PHDesignCriteria`** | `interface_distance` (the interface placement cutoff, default 6 Å) |
-| **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`); `to_rows` |
+| **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`, never repeated); `to_rows` |
+| **robustness** | one device policy for GPU runs; returned designs always hold allowed tokens; strict condition keys; one seed source (`seed` overrides `base_seed`); `report_tokens` for legacy vocabularies |
 | **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), HBPLUS check that fails fast, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
 | **tests · CI** | `foundry/models/mpnn/tests/ph/` (run on synthetic Potts tables) and a ruff + tests workflow |
 
