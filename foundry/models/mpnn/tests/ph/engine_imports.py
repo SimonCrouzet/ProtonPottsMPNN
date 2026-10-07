@@ -2,8 +2,10 @@
 
 The engine module imports atomworks, biotite and friends at module level, although the
 code under test (scorer, objective helpers, block descent) is pure torch. This helper
-stubs *only the packages that are not installed*, so the same tests run against the real
-packages once the environment exists, and stubs nothing then.
+stubs a package only when *project code* (``mpnn`` or ``foundry``) asks for one that is
+not installed. Installed packages are always real, and imports made by third-party code
+such as torch get the genuine ``ImportError``, so the same tests run against the real
+stack once the environment exists and nothing is stubbed then.
 
 Stubbed CamelCase names are plain classes (so project classes can subclass them); other
 names are ``MagicMock`` objects. Nothing the stubs return may be relied on by a test.
@@ -22,23 +24,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 ENGINE_MODULE = "mpnn.inference_engines.potts_mpnn_ph"
-OPTIONAL_ROOTS = (
-    "atomworks",
-    "biotite",
-    "lightning",
-    "hydra",
-    "omegaconf",
-    "sklearn",
-    "flaml",
-    "tqdm",
-    "propka",
-    "rich",
-    "beartype",
-    "jaxtyping",
-    "einops",
-    "environs",
-    "ipdb",
-)
+PROJECT_ROOTS = {"mpnn", "foundry"}
 FOUNDRY_SRC = Path(__file__).resolve().parents[4] / "src"
 
 
@@ -66,13 +52,28 @@ class _StubModule(types.ModuleType):
         return value
 
 
-class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-    def __init__(self, roots):
-        self.roots = set(roots)
+def _requested_by_project() -> bool:
+    """True when the import in progress was written in ``mpnn`` or ``foundry`` code."""
+    frame = sys._getframe(2)
+    while frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if not module.startswith("importlib"):
+            return module.split(".")[0] in PROJECT_ROOTS
+        frame = frame.f_back
+    return False
+
+
+class _ProjectStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Last in line: reached only when no real finder located the module."""
+
+    def __init__(self):
+        self.created: list[str] = []
 
     def find_spec(self, name, path, target=None):
-        if name.split(".")[0] in self.roots:
-            return importlib.machinery.ModuleSpec(name, self, is_package=True)
+        if name.split(".")[0] in PROJECT_ROOTS or not _requested_by_project():
+            return None
+        self.created.append(name)
+        return importlib.machinery.ModuleSpec(name, self, is_package=True)
 
     def create_module(self, spec):
         module = _StubModule(spec.name)
@@ -88,19 +89,18 @@ def engine_module():
     """Yield the imported engine module; undo all stubbing and imports on exit."""
     before = set(sys.modules)
     path_before = list(sys.path)
-    missing = [r for r in OPTIONAL_ROOTS if importlib.util.find_spec(r) is None]
-    finder = _StubFinder(missing)
     if importlib.util.find_spec("foundry") is None and FOUNDRY_SRC.exists():
         sys.path.append(str(FOUNDRY_SRC))
-    sys.meta_path.insert(0, finder)
+    finder = _ProjectStubFinder()
+    sys.meta_path.append(finder)
     try:
         yield importlib.import_module(ENGINE_MODULE)
     finally:
         sys.meta_path.remove(finder)
         sys.path[:] = path_before
-        # Drop only what this import brought in from the project and the stubs: removing
-        # real third-party modules (torch internals) would make a re-import fail.
-        owned = {"mpnn", "foundry", *missing}
+        # Drop only what the project and the stubs brought in: removing real third-party
+        # modules (torch internals) would make a re-import fail.
+        owned = PROJECT_ROOTS | {n.split(".")[0] for n in finder.created}
         for name in set(sys.modules) - before:
             if name.split(".")[0] in owned:
                 del sys.modules[name]
