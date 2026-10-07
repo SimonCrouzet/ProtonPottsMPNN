@@ -25,6 +25,7 @@ from mpnn.ph.binding import (
 from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
 from mpnn.ph.neighbourhood import near_positions
 from mpnn.ph.objective import Objective, TermContext
+from mpnn.ph.report import site_report
 from mpnn.ph.search import SearchResult, run_search
 from mpnn.ph.states import (
     ResolvedCondition,
@@ -73,6 +74,15 @@ class SwitchDesignRun:
     designable: List[int]
     conditions: Mapping[str, ResolvedCondition]
     inputs: DesignInputs
+
+    def site_report(self, record, beta: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Per-condition, per-site comparison of the complex with the free partners.
+
+        See :func:`mpnn.ph.report.site_report`; one row per condition and titratable site.
+        """
+        return site_report(
+            self.objective.ctx, self.conditions, self.inputs, record.tokens, beta
+        )
 
     def to_rows(
         self, chain: str, reference_sequence: Optional[str] = None
@@ -258,6 +268,7 @@ def run_switch_design(
         conditions=conditions,
         on=config.spec.on,
         off=config.spec.off,
+        receptor_view=receptor_view,
     )
     _, terms = config.weights_and_terms()
     objective = Objective(context, terms)

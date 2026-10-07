@@ -56,6 +56,7 @@ class TermContext:
     conditions: Mapping[str, ResolvedCondition]
     on: Optional[str] = None
     off: Optional[str] = None
+    receptor_view: Optional[SystemView] = None  # for per-site reports
 
     def tokens_in(self, tokens: torch.Tensor, condition: str) -> torch.Tensor:
         try:
