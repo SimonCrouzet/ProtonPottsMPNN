@@ -170,3 +170,20 @@ def test_resolve_designable_chains_includes_excludes_and_condition_sites(caplog)
 def test_resolve_designable_rejects_bad_input(spec):
     with pytest.raises(ValueError):
         resolve_designable(spec, CHAINS, RES_IDS)
+
+
+def test_describe_renders_one_chain_of_a_design():
+    run = run_switch_design(make_inputs(), make_config(allow_bare_titratable=["HIS"]))
+    best = run.result.records[0]
+    binder = run.describe(best, "A")
+    assert binder["res_ids"] == [1, 2, 3]
+    assert (
+        len(binder["canonical_sequence"]) == 3 and len(binder["extended_tokens"]) == 3
+    )
+    assert (
+        binder["canonical_sequence"][0] == "H"
+    )  # the condition-set His keeps its token
+    assert set(binder["extended_tokens"][1:]) <= {"ALA", "HIS"}
+    assert run.describe(best, "B")["canonical_sequence"] == "AHA"
+    with pytest.raises(ValueError, match="not in the structure"):
+        run.describe(best, "Z")

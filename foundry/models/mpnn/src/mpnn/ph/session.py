@@ -68,6 +68,25 @@ class SwitchDesignRun:
     objective: Objective
     designable: List[int]
     conditions: Mapping[str, ResolvedCondition]
+    inputs: DesignInputs
+
+    def describe(self, record, chain: str) -> Dict[str, Any]:
+        """One chain of a design as a canonical sequence and its token names.
+
+        ``extended_tokens`` keeps protonation states for residues that carry them
+        (residues set by a condition show the state of the *input* structure).
+        """
+        positions = [i for i, c in enumerate(self.inputs.chain_ids) if str(c) == chain]
+        if not positions:
+            raise ValueError(f"Chain {chain!r} is not in the structure.")
+        tokens = [int(t) for t in record.tokens[positions]]
+        table = self.inputs.table
+        return {
+            "chain": chain,
+            "res_ids": [int(self.inputs.res_ids[i]) for i in positions],
+            "canonical_sequence": table.canonical_sequence(tokens),
+            "extended_tokens": table.token_names(tokens),
+        }
 
 
 def resolve_designable(
@@ -198,4 +217,4 @@ def run_switch_design(
         max_rounds=config.max_rounds,
         n_select=config.n_select,
     )
-    return SwitchDesignRun(result, objective, designable, conditions)
+    return SwitchDesignRun(result, objective, designable, conditions, inputs)
