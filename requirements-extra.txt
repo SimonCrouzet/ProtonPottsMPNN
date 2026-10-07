@@ -13,7 +13,6 @@ scikit-learn>=1.8,<1.9   # match the FLAML model pickles (avoids unpickle versio
 shap>=0.52            # only for the labeller SHAP/analysis scripts (not required to train)
 
 # foundry's bond_annotation.py has a top-level `import ipdb` (a dev dependency)
-ipdb
 
 # --- notebook / plots (inference/design_ph.ipynb) ---
 matplotlib>=3.8
