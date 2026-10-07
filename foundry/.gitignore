@@ -225,6 +225,8 @@ logs/
 *.ckpt
 **/distillation/
 **/benchmarks/
+# the mpnn package ships a real benchmarks/ subpackage (neutron callback helpers); keep it trackable
+!models/mpnn/src/mpnn/benchmarks/
 
 # macOS
 .DS_Store

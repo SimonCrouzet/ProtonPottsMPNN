@@ -40,12 +40,6 @@ from atomworks.ml.datasets.pandas_dataset import PandasDataset, StructuralDatase
 from atomworks.ml.datasets.parsers.default_metadata_row_parsers import GenericDFParser
 from foundry.callbacks.callback import BaseCallback
 from foundry.utils.ddp import RankedLogger
-from mpnn.benchmarks.neutron import (
-    build_position_map,
-    load_neutron_benchmark,
-    prepare_neutron_benchmark,
-    prob_of_group,
-)
 from mpnn.model.pottsmpnn import PottsMPNN
 from mpnn.pipelines.potts_mpnn import build_mpnn_transform_pipeline
 from mpnn.transforms.extended_vocab import get_vocab
@@ -59,6 +53,24 @@ _DEFAULT_PARQUET = "data/mpnn_split/train_df_filtered.parquet"
 _DEFAULT_HEAVY_DIR = "benchmarks/data/neutron_benchmark/heavy"
 _DEFAULT_TRUTH_CSV = "benchmarks/data/neutron_benchmark/truth.csv"
 _DEFAULT_LIST_CSV = "benchmarks/data/neutron_benchmark_list.csv"
+
+
+def _neutron_benchmark_helpers():
+    """Import ``mpnn.benchmarks.neutron`` on first use.
+
+    That module (``build_position_map``, ``load_neutron_benchmark``, ``prepare_neutron_benchmark``) is not
+    part of this repository: a ``**/benchmarks/`` rule in ``foundry/.gitignore`` kept it out of the commit.
+    Importing it lazily keeps ``import mpnn.train`` working; only a run that actually scores the neutron
+    benchmark needs it.
+    """
+    try:
+        from mpnn.benchmarks import neutron
+    except ModuleNotFoundError as err:
+        raise ModuleNotFoundError(
+            "mpnn.benchmarks.neutron is missing from this repository (it was never committed), so the "
+            "neutron recovery benchmark cannot run. Restore the module or drop NeutronRecoveryCallback."
+        ) from err
+    return neutron
 
 
 def _make_token_idx_tensor(token_names, token_to_idx: dict[str, int]) -> torch.Tensor:
@@ -104,9 +116,10 @@ class NeutronRecoveryCallback(BaseCallback):
         """Freeze (once) + build the benchmark dataset. RANK-0 ONLY — called after the is_global_zero gate."""
         if self._prepared:
             return
+        neutron = _neutron_benchmark_helpers()
         if not self.truth_csv.exists():
-            prepare_neutron_benchmark(self.parquet_path, self.heavy_dir, self.truth_csv, self.list_csv)
-        self.truth_by_pdb, self.heavy_path = load_neutron_benchmark(self.heavy_dir, self.truth_csv)
+            neutron.prepare_neutron_benchmark(self.parquet_path, self.heavy_dir, self.truth_csv, self.list_csv)
+        self.truth_by_pdb, self.heavy_path = neutron.load_neutron_benchmark(self.heavy_dir, self.truth_csv)
         ranked_logger.info(
             f"[neutron] benchmark: {len(self.truth_by_pdb)} structures, "
             f"{sum(len(t) for t in self.truth_by_pdb.values())} truth residues"
@@ -177,7 +190,7 @@ class NeutronRecoveryCallback(BaseCallback):
             with open(os.devnull, "w") as _null, \
                  contextlib.redirect_stdout(_null), contextlib.redirect_stderr(_null):
                 out = self._benchmark_dataset[idx]
-            pos_map = build_position_map(out)
+            pos_map = _neutron_benchmark_helpers().build_position_map(out)
             input_features = {
                 k: v.unsqueeze(0) if isinstance(v, torch.Tensor) else v
                 for k, v in out["input_features"].items()
