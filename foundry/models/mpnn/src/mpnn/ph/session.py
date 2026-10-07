@@ -70,6 +70,49 @@ class SwitchDesignRun:
     conditions: Mapping[str, ResolvedCondition]
     inputs: DesignInputs
 
+    def to_rows(
+        self, chain: str, reference_sequence: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Plain dicts, one per design in ranked order, for tables and downstream code.
+
+        ``n_mutations`` is the Hamming distance of ``chain``'s canonical sequence to
+        ``reference_sequence``, by default the input structure's own sequence for that
+        chain. Term values appear as ``term_<name>``.
+        """
+        positions = [i for i, c in enumerate(self.inputs.chain_ids) if str(c) == chain]
+        if reference_sequence is None:
+            reference_sequence = self.inputs.table.canonical_sequence(
+                [int(t) for t in self.inputs.tokens[positions]]
+            )
+        rows = []
+        for rank, record in enumerate(self.result.records):
+            design = self.describe(record, chain)
+            if len(reference_sequence) != len(design["canonical_sequence"]):
+                raise ValueError("reference_sequence does not match the chain length.")
+            rows.append(
+                {
+                    "rank": rank,
+                    "chain": chain,
+                    "canonical_sequence": design["canonical_sequence"],
+                    "extended_tokens": " ".join(design["extended_tokens"]),
+                    "n_mutations": sum(
+                        a != b
+                        for a, b in zip(
+                            reference_sequence, design["canonical_sequence"]
+                        )
+                    ),
+                    "mode": self.result.plan.mode,
+                    "front": record.front,
+                    "selected": record.selected,
+                    "scalarised": record.scalarised,
+                    "weights": dict(record.weights),
+                    "run_index": record.run_index,
+                    "seed_index": record.seed_index,
+                    **{f"term_{k}": v for k, v in record.term_values.items()},
+                }
+            )
+        return rows
+
     def describe(self, record, chain: str) -> Dict[str, Any]:
         """One chain of a design as a canonical sequence and its token names.
 

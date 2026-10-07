@@ -593,6 +593,25 @@ class PHDesignOutput:
             return f"{self.protonation_type}_{self.scheme}{seed_tag}_res{res_tag}_s{self.sample}{self.id_suffix}"
         return f"{self.scheme}_s{self.sample}{self.id_suffix}"
 
+    def to_row(self, reference_sequence: Optional[str] = None) -> Dict[str, Any]:
+        """``to_metadata()`` plus the fields tables usually want (see ``PHDesignSet.to_rows``)."""
+        row = self.to_metadata()
+        row["binder_chain"] = self.binder_chain
+        row["canonical_sequence"] = self.canonical_sequence
+        row["centers"] = [
+            f"{res_id}:{ptype}"
+            for res_id, ptype in zip(self.center_res_ids or [], self.center_protonation_types or [])
+        ]
+        if reference_sequence is not None:
+            if len(reference_sequence) != len(self.canonical_sequence):
+                raise ValueError(
+                    f"reference_sequence has {len(reference_sequence)} residues, the design "
+                    f"{len(self.canonical_sequence)}")
+            row["n_mutations"] = sum(a != b for a, b in zip(reference_sequence, self.canonical_sequence))
+        else:
+            row["n_mutations"] = None
+        return row
+
     def to_metadata(self) -> Dict[str, Any]:
         """Energy scores + provenance for InverseFoldOutputItem.metadata (rewards stage)."""
         return {
@@ -653,6 +672,13 @@ class PHDesignSet(list):
             variants.append(seq)
             out.append(d)
         return out
+
+    def to_rows(self, reference_sequence: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Plain dicts, one per design, for tables and downstream code.
+
+        ``to_metadata()`` plus ``canonical_sequence``, ``centers`` (``"res_id:type"``) and, when the
+        starting binder sequence is given as ``reference_sequence``, ``n_mutations`` (Hamming distance)."""
+        return [d.to_row(reference_sequence) for d in self]
 
     def top(self, n: int) -> "PHDesignSet":
         return PHDesignSet(self.deduped().sorted_by_energy()[:n])
