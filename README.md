@@ -40,19 +40,17 @@ VENV_DIR=~/venvs/ppm ./install.sh   # put the venv elsewhere (default .venv)
 source .venv/bin/activate
 ```
 
-`install.sh` creates the venv — it **refuses to overwrite** an existing one unless you pass `--clear` — then a
-single `uv pip install -e ./foundry -r requirements-extra.txt` (the one resolution keeps both the foundry core —
-torch, lightning, atomworks[ml] — and the extras — the FLAML stack, jupyter, propka), verifies `import mpnn`
-resolves inside this folder (whatever the folder is called), and registers the venv as a Jupyter kernel
-`ProtonPottsMPNN (venv)`. Scripts just `import mpnn`; there are no `sys.path` hacks.
+`install.sh` runs `uv venv --clear` then a single `uv pip install -e ./foundry -r requirements-extra.txt`
+(the one resolution keeps both the foundry core — torch, lightning, atomworks[ml] — and the extras — the
+FLAML stack, jupyter, propka), verifies `import mpnn` resolves inside this folder, and registers the venv as
+a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there are no `sys.path` hacks.
 
 - **Python 3.12** is required (`mpnn`/`foundry` pin `>=3.12,<3.13`).
 - **Line endings** are LF (`.gitattributes`), so a checkout on Windows or `/mnt/d` runs `install.sh` and the SLURM
   scripts unchanged.
-- **HBPLUS** is an external C binary (not pip-installable) used by the **labeller**, the **fold scoring** and
-  the **design engine** (`prepare_potts_input` runs it on every structure it featurises) to read H-bond
-  geometry. Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`). `mpnn.ph` itself needs
-  only torch + numpy.
+- **HBPLUS** is an external C binary (not pip-installable) used by the **labeller** and the **fold scoring**
+  to read H-bond geometry. Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`). It is
+  **not** needed to run the design engine (which only reads the trained checkpoint).
 - Let the install finish uninterrupted — a killed `uv pip install` can leave the venv half-written (package
   metadata present, module files missing). If imports fail oddly, repair in place with
   `uv pip install --python .venv/bin/python --reinstall -e ./foundry -r requirements-extra.txt`.
@@ -60,7 +58,7 @@ resolves inside this folder (whatever the folder is called), and registers the v
 | part | needs mpnn/torch | needs HBPLUS | needs FLAML stack | needs external oracle weights |
 |------|:---:|:---:|:---:|:---:|
 | **label a PDB** (`labeller/`) | ✅ | ✅ | ✅ | — |
-| **design a binder** (`inference/`) | ✅ | ✅ | — | — |
+| **design a binder** (`inference/`) | ✅ | — | — | — |
 | **score a fold** (`scoring/`) | ✅ | ✅ (pH-bonds) | — | — |
 | **benchmarks** (`benchmarks/`) | ✅ | — | — | ProteinMPNN arm only |
 | **train** (`training/`, reference) | ✅ | ✅ | — | — |
@@ -108,7 +106,7 @@ internal design campaigns.
 
 ```bash
 python inference/design_ph.py       # -> inference/outputs/ (see below)
-# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (venv)" kernel)
+# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (.venv)" kernel)
 ```
 ```python
 from mpnn.inference_engines.potts_mpnn_ph import PottsMPNNPHEngine, PHDesignCriteria
@@ -269,7 +267,7 @@ cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=
 
 | folder | what it holds |
 |--------|---------------|
-| [`foundry/`](foundry/) | a copy of the `ph/foundry` monorepo; this fork edits the `mpnn` package only. The `mpnn` package is the deliverable: the model (`model/pottsmpnn.py`), transforms, the **deployed FLAML labeller** (`transforms/ev6/`), the **design engine** (`inference_engines/potts_mpnn_ph.py`), and `prepare_potts_input` (`potts_inference.py`). `models/{rf3,rfd3,rfd3na}` come along but their multi-GB weights are not shipped. |
+| [`foundry/`](foundry/) | a full verbatim copy of the `ph/foundry` monorepo. The `mpnn` package is the deliverable: the model (`model/pottsmpnn.py`), transforms, the **deployed FLAML labeller** (`transforms/ev6/`), the **design engine** (`inference_engines/potts_mpnn_ph.py`), and `prepare_potts_input` (`potts_inference.py`). `models/{rf3,rfd3,rfd3na}` come along but their multi-GB weights are not shipped. |
 | [`labeller/`](labeller/) | the FLAML protonation labeller: `label_pdb.py` (example above), the train path `01…05_*.py`, `pr_curve.py` (AUPR), and the trained models. |
 | [`inference/`](inference/) | `design_ph.ipynb` / `.py` (example above) + `design_placement_scan.py` (the engine's per-design placement plot) + `fold_rf3.py` (fold a design with the packaged RF3 engine; needs `RF3_CKPT` + GPU) + `examples/` (a PD-L1 seed binder + a real RF3 fold). |
 | [`scoring/`](scoring/) | fold read-outs: `charge_clash` (geometry) + `annotate` (pH-sensitive H-bonds / salt bridges via HBPLUS+PLIP). `score_example.py` is a runnable demo. |
@@ -298,19 +296,16 @@ cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=
 | **retrain the labeller** | `python labeller/05_train_one.py HIS features 1200` | `labeller/models/automl_feature_HIS/` |
 | **labeller AUPR** | `python labeller/pr_curve.py` | `labeller/{his,acid}_pr.png` (AP HIS 0.70, acids 0.33) |
 | **score a fold** | `HBPLUS_PATH=… python scoring/score_example.py` | pH-bond / charge-clash counts |
-| **placement by class** (library-wide) | `python benchmarks/placement_by_class.py` — needs `benchmarks/data/placement_scan.parquet`, **not shipped** | `benchmarks/placement_by_class.png` |
-| **pKa benchmark** | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6` | `<ckpt_dir>/eval_pkad/` (`pkad_*.csv` + scatter) |
+| **placement by class** (library-wide) | `python benchmarks/placement_by_class.py` | `benchmarks/placement_by_class.png` |
+| **pKa benchmark** | `PROTON_ROOT=$PWD python -m mpnn.scripts.eval_pkad --checkpoints checkpoints/…/epoch-0125.ckpt` | `pkad_*.csv` + scatter |
 | **stability benchmark** | `EV6_OUT_SUBDIR=his0.3_acid0.06 python benchmarks/stability_benchmark.py` | ΔΔG CSVs (GPU recommended) |
 | **3-way bar plot** | `EV6_OUT_SUBDIR=his0.3_acid0.06 python benchmarks/benchmark_barplot.py` | recovery + MegaScale + FireProt figure |
 | **binding AP** | `python benchmarks/binding_ap.py` | `benchmarks/results/summary_global_ap.png` |
-| **within-backbone** | `python benchmarks/within_backbone.py` — needs `egfr_pdl1_*.parquet`, `optimized_sweep_scores.parquet`, `curated_designs.parquet`, **not shipped** | `within_backbone_inverse_outcomes.png` |
+| **within-backbone** | `python benchmarks/within_backbone.py` | `within_backbone_inverse_outcomes.png` |
 
-Benchmark scripts derive the package root from their location (override with `PROTON_ROOT=/abs/path`); `eval_pkad`
-takes its paths as flags (its defaults point at the original cluster) and **`--extended_vocab` must match the
-checkpoint** — it defaults to `v4`, so pass `v6` for the shipped one. The model-quality benchmarks (PKAD,
-stability) compute from raw structures; **binding AP** reads the shipped `mb_gbind_benchmark.parquet`, whereas
-within-backbone and placement-by-class read parquets that are not in the repo (regenerating them needs the
-Boltz-2 / RF3 oracles).
+Benchmark scripts derive the package root from their location (override with `PROTON_ROOT=/abs/path`). The
+model-quality benchmarks (PKAD, stability) compute from raw structures; the design benchmarks (binding,
+within-backbone) read shipped parquets (regenerating them needs the Boltz-2 / RF3 oracles).
 
 ---
 
@@ -319,8 +314,7 @@ Boltz-2 / RF3 oracles).
 This project is released under the **MIT License** — see [`LICENSE`](LICENSE). It covers the
 Proton-PottsMPNN code authored here (`labeller/`, `inference/`, `scoring/`, `benchmarks/`, `training/`,
 `checkpoints/`, the docs, and the pH-design additions to the `mpnn` package). The bundled [`foundry/`](foundry/)
-is a copy of IPD's rc-foundry (the `mpnn` package inside it carries the pH-design additions) and keeps its own
-**BSD 3-Clause License**
+is a verbatim copy of IPD's rc-foundry and keeps its own **BSD 3-Clause License**
 ([`foundry/LICENSE.md`](foundry/LICENSE.md), © 2025 Institute for Protein Design, University of Washington).
 
 If you use this in academic work, please cite the manuscript *"pH-sensitive binder design with
@@ -328,12 +322,31 @@ Proton-PottsMPNN"* (Jacobsen et al., 2026).
 
 ---
 
-## About this fork
+## Changes in this fork
 
 This fork ([SimonCrouzet/ProtonPottsMPNN](https://github.com/SimonCrouzet/ProtonPottsMPNN)) is **modified by
 Simon Crouzet** from the published release
 ([christian-creator/ProtonPottsMPNN](https://github.com/christian-creator/ProtonPottsMPNN), commit `09682ab`).
-What changed: **`mpnn.ph`** (explicit states on both sides, either direction, several target states, opt-in
-Pareto search), `PHDesignCriteria.interface_distance`, reproducible `n_jobs` results, `to_rows`, a setup that
-runs from a fresh checkout (LF line endings, `install.sh`, HBPLUS and import fixes), and CI. Everything else is
-as published; `git log 09682ab..` lists each change.
+The text above is the original README **plus** what was added for these changes; `git log 09682ab..` lists
+each one.
+
+**What changed**
+
+| area | change |
+|------|--------|
+| **`mpnn.ph`** | explicit states on both sides, either direction, several target states, opt-in Pareto search — see *Switch design with explicit states* |
+| **`PHDesignCriteria`** | `interface_distance` (the interface placement cutoff, default 6 Å) |
+| **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`); `to_rows` |
+| **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), HBPLUS check that fails fast, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
+| **tests · CI** | `foundry/models/mpnn/tests/ph/` (run on synthetic Potts tables) and a ruff + tests workflow |
+
+**Where the original text above no longer holds**
+
+| the original says | now |
+|--------------------|-----|
+| Install: `install.sh` runs `uv venv --clear`; kernel `ProtonPottsMPNN (.venv)` (also in example 2) | it **refuses to overwrite** an existing venv unless given `--clear`; `VENV_DIR` sets where it goes; the kernel is `ProtonPottsMPNN (venv)` |
+| HBPLUS is **not** needed to run the design engine (and the install table) | it **is**: `prepare_potts_input` runs HBPLUS on every structure it featurises. Only `mpnn.ph` itself needs just torch + numpy |
+| example 2 snippet | it needs `seed_source="native"` (the snippet above now has it): the default `"inverse"` needs `initial_sequences` |
+| `foundry/` is "a full verbatim copy" (also under License) | this fork edits the `mpnn` package inside it; the rest is unchanged |
+| pKa benchmark: `… eval_pkad --checkpoints …` with `PROTON_ROOT` | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6` — there is no `--checkpoints` flag, `--extended_vocab` defaults to `v4`, and the default paths point at the original cluster |
+| the design benchmarks (binding, within-backbone) read shipped parquets | only **binding AP** does (`mb_gbind_benchmark.parquet`). `within_backbone.py` needs `egfr_pdl1_*.parquet`, `optimized_sweep_scores.parquet` and `curated_designs.parquet`; `placement_by_class.py` needs `data/placement_scan.parquet`. None of them is in the repo |
