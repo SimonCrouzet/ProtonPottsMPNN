@@ -130,3 +130,10 @@ def test_design_mask_can_admit_bare_titratable_residues(v6):
     assert mask["HIS"] and not mask["ASP"] and not mask["HIS-P"]
     with pytest.raises(ValueError, match="Not titratable"):
         v6.design_mask(allow_bare_titratable=["LYS"])
+
+
+def test_canonical_sequence_folds_states_onto_residues(v6):
+    tokens = [v6.index(t) for t in ("ALA", "HIS-P", "ASP-D", "GLU-A", "UNK", "TRP")]
+    assert v6.canonical_sequence(tokens) == "AHDEXW"
+    assert v6.token_names(tokens) == ["ALA", "HIS-P", "ASP-D", "GLU-A", "UNK", "TRP"]
+    assert v6.canonical_sequence([]) == ""

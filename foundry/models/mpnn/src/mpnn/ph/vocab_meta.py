@@ -25,6 +25,8 @@ STANDARD_RESIDUES: Tuple[str, ...] = (
     "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
 )  # fmt: skip
 UNKNOWN_TOKEN = "UNK"
+# STANDARD_RESIDUES is alphabetical by three-letter code, so this string follows it.
+THREE_TO_ONE: Dict[str, str] = dict(zip(STANDARD_RESIDUES, "ARNDCQEGHILKMFPSTWYV"))
 
 
 class Protonation(str, enum.Enum):
@@ -162,6 +164,17 @@ class TokenTable:
                 allowed = meta.parent in allow_bare_titratable
             mask.append(allowed)
         return mask
+
+    def canonical_sequence(self, tokens: Sequence[int]) -> str:
+        """One-letter sequence of the parent residues (state tokens fold onto them)."""
+        parents = self.parent_index()
+        return "".join(
+            THREE_TO_ONE.get(self._names[parents[int(t)]], "X") for t in tokens
+        )
+
+    def token_names(self, tokens: Sequence[int]) -> List[str]:
+        """Token names, including protonation states, for a list of token indices."""
+        return [self._names[int(t)] for t in tokens]
 
     def resolve(self, parent: str, spec: str) -> str:
         """Turn a token name or a state word into one token of ``parent``.
