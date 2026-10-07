@@ -1,0 +1,53 @@
+"""Synthetic Potts systems for atomworks-free tests."""
+
+from typing import Dict, List, Sequence, Tuple
+
+import torch
+
+from mpnn.ph.potentials import BlockPotentials, probe_block_potentials
+
+
+class SyntheticPotts:
+    """A random directed pairwise energy ``sum_i h_i[S_i] + sum_(i->j) J_ij[S_i, S_j]``.
+
+    Its block potentials come from probing, so they do not depend on any analytic
+    decomposition. Positions are 0..n-1 of the *system*, not of a larger complex.
+    """
+
+    def __init__(
+        self,
+        n_positions: int,
+        vocab_size: int,
+        edges: Sequence[Tuple[int, int]],
+        seed: int = 0,
+        scale: float = 1.0,
+    ) -> None:
+        gen = torch.Generator().manual_seed(seed)
+        self.n_positions = n_positions
+        self.vocab_size = vocab_size
+        self.fields = scale * torch.randn(
+            n_positions, vocab_size, generator=gen, dtype=torch.float64
+        )
+        self.couplings: Dict[Tuple[int, int], torch.Tensor] = {
+            (i, j): scale
+            * torch.randn(vocab_size, vocab_size, generator=gen, dtype=torch.float64)
+            for i, j in edges
+        }
+
+    def H_of(self, tokens: torch.Tensor) -> float:
+        total = sum(
+            float(self.fields[i, int(tokens[i])]) for i in range(self.n_positions)
+        )
+        for (i, j), table in self.couplings.items():
+            total += float(table[int(tokens[i]), int(tokens[j])])
+        return total
+
+    def block_potentials(
+        self, tokens: torch.Tensor, block: Sequence[int]
+    ) -> BlockPotentials:
+        return probe_block_potentials(self.H_of, tokens, block, self.vocab_size)
+
+
+def all_pairs(positions: Sequence[int]) -> List[Tuple[int, int]]:
+    """Directed edges i->j for every ordered pair of distinct positions."""
+    return [(i, j) for i in positions for j in positions if i != j]
