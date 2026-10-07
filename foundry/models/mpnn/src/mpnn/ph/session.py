@@ -260,12 +260,40 @@ def _no_options(name: str, options: Mapping[str, Any]) -> None:
         raise ValueError(f"{name} takes no binding_options (got {sorted(options)}).")
 
 
+def _check_switch_can_differ(
+    config: SwitchDesignConfig, conditions: Mapping[str, ResolvedCondition]
+) -> None:
+    """Refuse a switch term whose ``on`` and ``off`` conditions cannot differ.
+
+    With state-based binding models the energies depend on the conditions only through
+    their states, so identical states make the switch exactly zero for every design;
+    ``linked_equilibrium`` also depends on the pH.
+    """
+    on, off = config.spec.on, config.spec.off
+    weights, _ = config.weights_and_terms()
+    if "switch" not in weights or on is None or off is None:
+        return
+    if conditions[on].token_by_position != conditions[off].token_by_position:
+        return
+    if config.binding_model == "linked_equilibrium" and (
+        conditions[on].ph != conditions[off].ph
+    ):
+        return
+    raise ValueError(
+        f"The {on!r} and {off!r} conditions impose identical states"
+        + (" and the same pH" if config.binding_model == "linked_equilibrium" else "")
+        + ", so the switch term is zero for every design. Check the condition keys "
+        "(for example 'states', not 'state') and the states you assigned."
+    )
+
+
 def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
     """Resolve one structure's states and build its objective and designable set."""
     n_positions = len(inputs.tokens)
     vocab_size = len(inputs.table)
     site_index = site_index_from_arrays(inputs.chain_ids, inputs.res_ids)
     conditions = resolve_spec(config.spec, inputs.table, site_index, inputs.parents)
+    _check_switch_can_differ(config, conditions)
 
     complex_view = SystemView(inputs.complex_scorer, range(n_positions), vocab_size)
     binder_view = SystemView(inputs.binder_scorer, inputs.binder_positions, vocab_size)

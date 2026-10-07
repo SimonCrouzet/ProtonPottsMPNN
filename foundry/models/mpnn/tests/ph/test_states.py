@@ -146,3 +146,31 @@ def test_mismatched_coverage_is_flagged(sites, caplog):
 def test_resolved_conditions_carry_their_ph(sites):
     resolved = resolve_spec(StateSpec.from_dict(spec_dict()), V6, sites, PARENTS)
     assert (resolved["on"].ph, resolved["off"].ph) == (7.4, 6.5)
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            {"state": {"A:10": "HIS-S"}},
+            "unknown keys .*'state'",
+        ),  # the typo of 'states'
+        ({"states": {"A:10": "HIS-S"}, "pH": 7.4}, "unknown keys .*'pH'"),
+        ({"ph": 7.4}, "needs a 'states' mapping"),
+        (["A:10"], "must be a mapping"),
+        ({"states": ["A:10"]}, "'states' must be a mapping"),
+    ],
+)
+def test_condition_bodies_are_validated_as_strictly_as_the_config(body, message):
+    with pytest.raises(ValueError, match=message):
+        StateSpec.from_dict({"conditions": {"on": body}})
+
+
+def test_the_spec_rejects_unknown_top_level_keys():
+    with pytest.raises(ValueError, match="unknown keys .*'condition'"):
+        StateSpec.from_dict({"condition": {}, "conditions": {"on": {"states": {}}}})
+
+
+def test_an_explicitly_empty_condition_is_allowed():
+    spec = StateSpec.from_dict({"conditions": {"base": {"states": {}}}})
+    assert spec.conditions["base"].states == {}
