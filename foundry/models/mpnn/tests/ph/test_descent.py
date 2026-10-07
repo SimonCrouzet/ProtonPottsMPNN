@@ -122,3 +122,45 @@ def test_bad_arguments_fail_loudly(objective):
         run(objective, block_size=0)
     with pytest.raises(ValueError, match="sweep"):
         run(objective, sweep="random")
+
+
+@pytest.mark.parametrize(
+    "start", [(3, 3), (3, 2), (2, 3)]
+)  # HIS-S / HIS-P: not allowed
+@pytest.mark.parametrize("block_size", [1, 2])
+@pytest.mark.parametrize("scalarisation", ["weighted_sum", "tchebycheff"])
+def test_result_never_keeps_a_forbidden_token(
+    objective, start, block_size, scalarisation
+):
+    """A forbidden native token must not survive, even when it scores best (here it does)."""
+    tokens = BASE.clone()
+    tokens[DESIGNABLE] = torch.tensor(start)
+    result = run(
+        objective, tokens=tokens, block_size=block_size, scalarisation=scalarisation
+    )
+    assert all(VALID[int(t)] for t in result.tokens[DESIGNABLE])
+    # the returned value is the value of the returned (valid) sequence
+    assert result.value == pytest.approx(
+        objective.scalarised_value(
+            result.tokens, NAMES_ACTIVE, (0.3, 0.3, 0.4), scalarisation
+        )
+    )
+
+
+def test_a_forbidden_start_that_beats_every_allowed_design_is_replaced(objective):
+    tokens = BASE.clone()
+    tokens[DESIGNABLE] = torch.tensor([3, 3])
+    start_value = objective.scalarised_value(tokens, NAMES_ACTIVE, (0.3, 0.3, 0.4))
+    best_allowed = min(
+        objective.scalarised_value(_with(values), NAMES_ACTIVE, (0.3, 0.3, 0.4))
+        for values in itertools.product([0, 1], repeat=2)
+    )
+    assert start_value < best_allowed  # the setup the old code got wrong
+    result = run(objective, tokens=tokens, block_size=2)
+    assert result.value == pytest.approx(best_allowed)
+
+
+def _with(values):
+    tokens = BASE.clone()
+    tokens[DESIGNABLE] = torch.tensor(values)
+    return tokens
