@@ -1,5 +1,5 @@
 # Extra Python deps NOT already declared by foundry/pyproject.toml (rc-foundry).
-# Install AFTER `pip install -e foundry`.  See ENV.md.
+# Install AFTER `pip install -e foundry` (install.sh does both in one resolution; see README, "Install").
 
 # pandas 3.0 defaults to Arrow-backed strings, which FLAML 2.6 can't index (ArrowStringArray has no .iloc);
 # pin to the 2.x series the model was developed with.
