@@ -582,12 +582,16 @@ class PHDesignOutput:
     # token string), so any step's sequence can be saved. step 0 = initial seq.
     energy_trajectory: Optional[List[Dict[str, Any]]] = None
 
+    # Set by PHDesignSet.deduped() when two DIFFERENT sequences share a design_id (the id does not encode
+    # every swept knob), so neither is silently dropped. Empty for the usual case: ids are unchanged.
+    id_suffix: str = ""
+
     def design_id(self) -> str:
         if self.protonation_type is not None and self.center_res_ids:
             seed_tag = "" if self.seed_idx is None else f"_seed{self.seed_idx}"
             res_tag = "-".join(str(r) for r in self.center_res_ids)
-            return f"{self.protonation_type}_{self.scheme}{seed_tag}_res{res_tag}_s{self.sample}"
-        return f"{self.scheme}_s{self.sample}"
+            return f"{self.protonation_type}_{self.scheme}{seed_tag}_res{res_tag}_s{self.sample}{self.id_suffix}"
+        return f"{self.scheme}_s{self.sample}{self.id_suffix}"
 
     def to_metadata(self) -> Dict[str, Any]:
         """Energy scores + provenance for InverseFoldOutputItem.metadata (rewards stage)."""
@@ -635,12 +639,19 @@ class PHDesignSet(list):
         return PHDesignSet(sorted(self, key=lambda d: d.final_potts_energy))
 
     def deduped(self) -> "PHDesignSet":
-        seen, out = set(), PHDesignSet()
+        """Drop exact repeats (same id AND same sequence); keep, under a ``~k`` id suffix, designs that
+        share an id but differ in sequence. First occurrence wins, so the order of ``self`` decides."""
+        seen: Dict[str, List[tuple]] = {}
+        out = PHDesignSet()
         for d in self:
-            did = d.design_id()
-            if did not in seen:
-                seen.add(did)
-                out.append(d)
+            did, seq = d.design_id(), tuple(d.extended_tokens)
+            variants = seen.setdefault(did, [])
+            if seq in variants:
+                continue
+            if variants:
+                d.id_suffix = f"~{len(variants) + 1}"
+            variants.append(seq)
+            out.append(d)
         return out
 
     def top(self, n: int) -> "PHDesignSet":
@@ -1219,7 +1230,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         out = PHDesignSet()
         try:
             with mp.get_context("fork").Pool(min(n_jobs, len(tasks)), initializer=_pool_init) as pool:
-                for sub in pool.imap_unordered(_pool_task, tasks):
+                for sub in pool.imap(_pool_task, tasks):   # ordered: same result list as the serial path
                     out.extend(sub)
         finally:
             _POOL_CTX = _POOL_ENGINE = _POOL_CRITERIA = None
