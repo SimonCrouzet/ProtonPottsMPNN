@@ -114,3 +114,14 @@ def test_a_run_changes_only_the_neighbourhood_of_the_target_centre():
     for record in run.result.records:
         unchanged = [p for p in range(6) if p != 1]
         assert record.tokens[unchanged].tolist() == BASE[unchanged].tolist()
+
+
+def test_ranks_and_the_total_cap_are_separate_steps():
+    from mpnn.ph.neighbourhood import UNRANKED, cap_by_rank, near_ranks
+
+    ranks = near_ranks(TABLE, [3], pool=range(6))
+    # centre 3 lists 2 then 5; position 1 only lists the centre, so it is unranked
+    assert ranks == {2: 0, 5: 1, 1: UNRANKED}
+    assert cap_by_rank([1, 2, 5], ranks, 2) == [2, 5]
+    assert cap_by_rank([1, 2, 5], ranks, 0) == [1, 2, 5]  # 0 = no cap
+    assert cap_by_rank([4, 7], {}, 1) == [4]  # no ranks: ties go to the lower position

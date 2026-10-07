@@ -3,6 +3,7 @@
 import dataclasses
 import itertools
 
+import numpy as np
 import pytest
 import torch
 from objective_fixtures import BASE, DESIGN_BLOCK, NAMES
@@ -156,3 +157,30 @@ def test_target_reduce_is_validated_and_defaults_to_the_worst_state():
     assert config().target_reduce == "max"
     with pytest.raises(ValueError, match="target_reduce"):
         config(target_reduce="median")
+
+
+def contact_table(nearest_binder_of_target_site):
+    """Toy contact table; target site B:2 (position 4) lists the given binder position first."""
+    table = [[0, 1, 4], [1, 2, 3], [2, 1, 3], [3, 2, 5], [4, 1, 5], [5, 4, 3]]
+    table[4] = [4, nearest_binder_of_target_site, 5]
+    return np.array(table)
+
+
+def test_max_mutations_caps_the_shared_designable_set_not_each_state():
+    """Two states that pick different nearest residues must still respect one total cap."""
+    states = two_states()
+    states["human"] = dataclasses.replace(
+        states["human"], neighbour_index=contact_table(1)
+    )
+    states["mouse"] = dataclasses.replace(
+        states["mouse"], neighbour_index=contact_table(2)
+    )
+    near = {"sites": ["B:2"], "max_mutations": 1}
+    run = run_switch_design_ensemble(
+        states, config(designable={"chains": ["A"], "near": near})
+    )
+    assert run.designable == [1]  # ties on rank go to the lower position
+    uncapped = run_switch_design_ensemble(
+        states, config(designable={"chains": ["A"], "near": {"sites": ["B:2"]}})
+    )
+    assert uncapped.designable == [1, 2]  # without the cap the states differ
