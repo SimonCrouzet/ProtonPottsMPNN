@@ -217,6 +217,13 @@ the same neighbourhood that `neighbour_k` and `max_mutations` define in `run_ph_
 state, raising its apparent pKa), and with `linked_equilibrium` the apparent pKa of the free and the bound
 state. All values are in model units.
 
+To design against several target states (for example human and mouse), pass one complex per state:
+`engine.run_switch_design_ensemble(structures={"human": aa_h, "mouse": aa_m}, binder_chain="A", config=config)`.
+The complexes must contain the same binder (same residues and sequence), and the sites named in the conditions
+must exist in each complex with the same numbering. Every term is evaluated in every state and reduced by
+`target_reduce`: `max` (default) optimises the worst state, `mean` the average. Each record keeps the per-state
+values (`record.per_state`, and `term_<name>@<state>` columns in `to_rows`), and `site_report` covers every state.
+
 Unknown config keys raise instead of being ignored. Designed positions take only non-titratable residues
 unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state unspecified"). The design core is
 unit-tested on synthetic Potts tables without the heavy environment:
