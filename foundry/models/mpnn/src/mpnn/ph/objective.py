@@ -65,6 +65,9 @@ class TermContext:
                 f"Unknown condition {condition!r}; have {sorted(self.conditions)}."
             ) from None
 
+    def ph_of(self, condition: str) -> Optional[float]:
+        return self.conditions[condition].ph
+
     def role(self, role: str, override: Optional[str] = None) -> str:
         name = override or getattr(self, role)
         if name is None:
@@ -138,12 +141,14 @@ class PotencyTerm(Term):
         self.condition = condition
 
     def block_values(self, ctx, tokens, block):
-        state = ctx.tokens_in(tokens, ctx.role("on", self.condition))
-        return ctx.binding.block_potentials(state, block).joint()
+        name = ctx.role("on", self.condition)
+        state = ctx.tokens_in(tokens, name)
+        return ctx.binding.block_values(state, block, ph=ctx.ph_of(name))
 
     def value(self, ctx, tokens):
-        state = ctx.tokens_in(tokens, ctx.role("on", self.condition))
-        return float(ctx.binding.energy(state))
+        name = ctx.role("on", self.condition)
+        state = ctx.tokens_in(tokens, name)
+        return float(ctx.binding.energy(state, ph=ctx.ph_of(name)))
 
 
 class SwitchTerm(Term):
@@ -166,17 +171,20 @@ class SwitchTerm(Term):
         return torch.relu(self.off_margin - gap)
 
     def block_values(self, ctx, tokens, block):
-        on_state = ctx.tokens_in(tokens, ctx.role("on", self.on))
-        off_state = ctx.tokens_in(tokens, ctx.role("off", self.off))
-        g_on = ctx.binding.block_potentials(on_state, block).joint()
-        g_off = ctx.binding.block_potentials(off_state, block).joint()
+        on, off = ctx.role("on", self.on), ctx.role("off", self.off)
+        g_on = ctx.binding.block_values(
+            ctx.tokens_in(tokens, on), block, ph=ctx.ph_of(on)
+        )
+        g_off = ctx.binding.block_values(
+            ctx.tokens_in(tokens, off), block, ph=ctx.ph_of(off)
+        )
         return self._shape(g_off - g_on)
 
     def value(self, ctx, tokens):
-        on_state = ctx.tokens_in(tokens, ctx.role("on", self.on))
-        off_state = ctx.tokens_in(tokens, ctx.role("off", self.off))
+        on, off = ctx.role("on", self.on), ctx.role("off", self.off)
         gap = torch.tensor(
-            ctx.binding.energy(off_state) - ctx.binding.energy(on_state),
+            ctx.binding.energy(ctx.tokens_in(tokens, off), ph=ctx.ph_of(off))
+            - ctx.binding.energy(ctx.tokens_in(tokens, on), ph=ctx.ph_of(on)),
             dtype=torch.float64,
         )
         return float(self._shape(gap))

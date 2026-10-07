@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import abc
 import logging
-from typing import ClassVar, Dict, Protocol, Sequence, Type
+from typing import ClassVar, Dict, Optional, Protocol, Sequence, Type
 
 import torch
 
@@ -81,19 +81,31 @@ class SystemView:
 
 
 class BindingModel(abc.ABC):
-    """Interface: absolute binding energy and its block decomposition."""
+    """Interface: absolute binding energy and its block values.
+
+    ``ph`` is the pH of the condition being scored. State-based models ignore it (the
+    condition's states are already in ``tokens``); pH-continuous models require it.
+    """
 
     name: ClassVar[str]
 
     @abc.abstractmethod
-    def energy(self, tokens: torch.Tensor) -> float:
+    def energy(self, tokens: torch.Tensor, ph: Optional[float] = None) -> float:
         """Binding energy of the full token assignment ``tokens`` (lower = tighter)."""
 
-    @abc.abstractmethod
     def block_potentials(
         self, tokens: torch.Tensor, block: Sequence[int]
     ) -> BlockPotentials:
-        """Binding energy as a function of the tokens at ``block`` (others from ``tokens``)."""
+        """Additive unary + pairwise decomposition over ``block``, when one exists."""
+        raise NotImplementedError(
+            f"{self.name} has no additive block decomposition; use block_values."
+        )
+
+    def block_values(
+        self, tokens: torch.Tensor, block: Sequence[int], ph: Optional[float] = None
+    ) -> torch.Tensor:
+        """Binding energy for every joint assignment of ``block``: shape ``[V] * B``."""
+        return self.block_potentials(tokens, block).joint()
 
 
 class ComplexGap(BindingModel):
@@ -105,7 +117,7 @@ class ComplexGap(BindingModel):
     def __init__(self, complex_view: SystemView) -> None:
         self.complex_view = complex_view
 
-    def energy(self, tokens: torch.Tensor) -> float:
+    def energy(self, tokens: torch.Tensor, ph: Optional[float] = None) -> float:
         return self.complex_view.energy(tokens)
 
     def block_potentials(self, tokens, block) -> BlockPotentials:
@@ -133,7 +145,7 @@ class StateBinding(BindingModel):
         self.binder_view = binder_view
         self.receptor_view = receptor_view
 
-    def energy(self, tokens: torch.Tensor) -> float:
+    def energy(self, tokens: torch.Tensor, ph: Optional[float] = None) -> float:
         return (
             self.complex_view.energy(tokens)
             - self.binder_view.energy(tokens)

@@ -7,6 +7,7 @@ import torch
 from potts_fixtures import IdealComplex, SyntheticPotts, V, all_pairs
 
 from mpnn.ph.binding import (
+    BindingModel,
     ComplexGap,
     StateBinding,
     SystemView,
@@ -132,3 +133,20 @@ def test_factory_names_and_errors(ideal):
     assert model.name == "state_binding"
     with pytest.raises(ValueError, match="Unknown binding model"):
         make_binding_model("linked_equilibrium", complex_view=complex_view)
+
+
+def test_block_values_default_to_the_potentials_joint(ideal):
+    model = StateBinding(*ideal.views())
+    values = model.block_values(TOKENS, [0, 2], ph=7.4)  # ph is ignored by this model
+    assert torch.equal(values, model.block_potentials(TOKENS, [0, 2]).joint())
+
+
+def test_model_without_decomposition_says_so():
+    class Opaque(BindingModel):
+        name = "opaque"
+
+        def energy(self, tokens, ph=None):
+            return 0.0
+
+    with pytest.raises(NotImplementedError, match="block_values"):
+        Opaque().block_potentials(TOKENS, [0])

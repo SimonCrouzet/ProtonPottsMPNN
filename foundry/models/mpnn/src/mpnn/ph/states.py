@@ -117,6 +117,7 @@ class ResolvedCondition:
 
     name: str
     token_by_position: Mapping[int, int]
+    ph: Optional[float] = None
 
     def apply(self, tokens: torch.Tensor) -> torch.Tensor:
         """Return a copy of the 1-D token tensor ``tokens`` with the overrides applied."""
@@ -173,7 +174,7 @@ def resolve_condition(
             )
         token = table.resolve(parent, spec)
         token_by_position[position] = table.index(token)
-    return ResolvedCondition(condition.name, token_by_position)
+    return ResolvedCondition(condition.name, token_by_position, condition.ph)
 
 
 def resolve_spec(
