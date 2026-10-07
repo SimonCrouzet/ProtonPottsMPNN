@@ -132,7 +132,7 @@ def test_factory_names_and_errors(ideal):
     )
     assert model.name == "state_binding"
     with pytest.raises(ValueError, match="Unknown binding model"):
-        make_binding_model("linked_equilibrium", complex_view=complex_view)
+        make_binding_model("nonsense", complex_view=complex_view)
 
 
 def test_block_values_default_to_the_potentials_joint(ideal):
