@@ -45,8 +45,9 @@ a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there ar
 
 - **Python 3.12** is required (`mpnn`/`foundry` pin `>=3.12,<3.13`).
 - **HBPLUS** is an external C binary (not pip-installable) used by the **labeller** and the **fold scoring**
-  to read H-bond geometry. Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`). It is
-  **not** needed to run the design engine (which only reads the trained checkpoint).
+  to read H-bond geometry. Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`). The
+  design engine needs it too, because featurising a structure (`prepare_potts_input`) runs HBPLUS. The
+  explicit-state design core in `mpnn.ph` does not; it only needs torch and numpy.
 - Let the install finish uninterrupted — a killed `uv pip install` can leave the venv half-written (package
   metadata present, module files missing). If imports fail oddly, repair in place with
   `uv pip install --python .venv/bin/python --reinstall -e ./foundry -r requirements-extra.txt`.
@@ -54,7 +55,7 @@ a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there ar
 | part | needs mpnn/torch | needs HBPLUS | needs FLAML stack | needs external oracle weights |
 |------|:---:|:---:|:---:|:---:|
 | **label a PDB** (`labeller/`) | ✅ | ✅ | ✅ | — |
-| **design a binder** (`inference/`) | ✅ | — | — | — |
+| **design a binder** (`inference/`) | ✅ | ✅ | — | — |
 | **score a fold** (`scoring/`) | ✅ | ✅ (pH-bonds) | — | — |
 | **benchmarks** (`benchmarks/`) | ✅ | — | — | ProteinMPNN arm only |
 | **train** (`training/`, reference) | ✅ | ✅ | — | — |
@@ -111,6 +112,7 @@ engine = PottsMPNNPHEngine(checkpoint_path=CKPT, extended_vocab="v6")   # 30-tok
 crit = PHDesignCriteria(
     method="block_descent", backend="potts",          # the internal-campaign optimiser
     combined_lambda=0.3,                               # Eq (6): O = (1−λ)·zscore(H_stab) + λ·zscore(Σ sel)
+    seed_source="native",                              # start from the input sequence (the default "inverse" needs initial_sequences)
     center_types=["HIS-P", "ASP-P", "GLU-P"],          # composition to place …
     placement_by="scan_potts",                         # … placement chooses the positions
     dep_map={"HIS-P": ["HIS-S"], "ASP-P": ["ASP-D"], "GLU-P": ["GLU-D"]},  # v6 has no HID/HIE
@@ -154,6 +156,59 @@ designs (`pareto_fold_manifest.json`) ready to fold elsewhere and scores a shipp
 
 > Point it at your own backbone by editing `PDB` / `BINDER_CHAIN` (or `inference/examples/example_meta.json`).
 > The checkpoint's `extended_vocab` **must** be `"v6"` or the 30-token weight load fails.
+
+---
+
+## States on both sides, either direction (`mpnn.ph`)
+
+`run_ph_redesign` pins protonated centres on the binder, which favours the protonated state inside the
+complex. `PottsMPNNPHEngine.run_switch_design` instead takes **conditions** (for example pH 7.4 and pH 6.5)
+that name the protonation state of any residue on either chain, so a binder that binds at 7.4 but not 6.5,
+and its reverse, differ only by swapping which condition is `on`. The receptor's titratable residues carry
+states in each condition just like the binder's.
+
+The objective combines three terms, each optional (a weight of 0 switches it off):
+
+| term | meaning |
+|------|---------|
+| `stability` | Potts energy of the binder alone, reduced over conditions by `max` (worst case) or `mean` |
+| `potency` | binding energy in the `on` condition |
+| `switch` | how much weaker binding is in `off` than in `on`; an optional `off_margin` stops rewarding the gap once it is wide enough |
+
+`binding_model` chooses how binding energy is computed: `state_binding` (default, complex minus binder alone
+minus receptor alone, so only the interface contribution counts), `complex_gap` (the complex energy), or
+`linked_equilibrium` (experimental: averages over the protonation states the free partners populate at each
+condition's pH; its `beta` is uncalibrated). One active term, or one explicit weight vector, is an ordinary
+single-objective run. `search: pareto` with two or more active terms sweeps weight vectors and returns the
+Pareto set instead.
+
+```python
+config = {
+    "conditions": {
+        "on":  {"ph": 7.4, "states": {"A:12": "deprotonated", "B:57": "deprotonated"}},
+        "off": {"ph": 6.5, "states": {"A:12": "protonated",   "B:57": "protonated"}},
+    },
+    "terms": {"stability": {"weight": 0.3}, "potency": {"weight": 0.3},
+              "switch": {"weight": 0.4, "off_margin": 2.0}},
+    "designable": {"chains": ["A"]},       # residues named in a condition are never redesigned
+    "binding_model": "state_binding",      # | "complex_gap" | "linked_equilibrium"
+    "search": "single",                    # | "pareto"
+}
+run = engine.run_switch_design(atom_array=aa, binder_chain="A", config=config)
+best = run.result.records[0]
+run.describe(best, "A")                    # canonical sequence + token names of the binder
+```
+
+Unknown config keys raise instead of being ignored. Designed positions take only non-titratable residues
+unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state unspecified"). The design core is
+unit-tested on synthetic Potts tables without the heavy environment:
+
+```bash
+cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q
+```
+
+`run_switch_design` itself has not yet been run end to end on a real structure; it needs HBPLUS and the full
+environment.
 
 ---
 
