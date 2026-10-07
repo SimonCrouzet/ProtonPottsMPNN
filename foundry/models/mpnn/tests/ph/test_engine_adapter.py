@@ -41,3 +41,33 @@ def test_state_binding_over_real_scorers_matches_per_assignment_energy(engine):
             probe = TOKENS.clone()
             probe[block] = torch.tensor(values)
             assert float(joint[values]) == pytest.approx(model.energy(probe), abs=1e-4)
+
+
+def test_positions_in_complex_follow_the_isolated_chains_order():
+    from mpnn.ph.engine_adapter import positions_in_complex
+    from mpnn.ph.states import site_index_from_arrays
+
+    index = site_index_from_arrays(["A", "A", "B", "B"], [1, 2, 1, 2])
+    assert positions_in_complex(["B", "B"], [2, 1], index) == [3, 2]
+    with pytest.raises(KeyError, match="not in the complex"):
+        positions_in_complex(["B"], [9], index)
+    with pytest.raises(ValueError, match="same complex position"):
+        positions_in_complex(["A", "A"], [1, 1], index)
+
+
+def test_parent_names_map_states_onto_their_residue():
+    from mpnn.ph.engine_adapter import parent_names
+    from mpnn.ph.vocab_meta import TokenTable
+
+    table = TokenTable(("ALA", "HIS", "HIS-P", "HIS-S"))
+    names = parent_names(table.names, table.parent_index(), [0, 2, 3, 1])
+    assert names == ["ALA", "HIS", "HIS", "HIS"]
+
+
+def test_knn_partner_rank_skips_the_residue_itself():
+    import numpy as np
+
+    from mpnn.ph.engine_adapter import knn_partner_rank
+
+    rank = knn_partner_rank(np.array([[0, 2, 1], [1, 0, 2], [2, 1, 0]]))
+    assert rank(0) == [2, 1] and rank(1) == [0, 2]
