@@ -141,3 +141,8 @@ def test_mismatched_coverage_is_flagged(sites, caplog):
     with caplog.at_level(logging.WARNING, logger="mpnn.ph.states"):
         resolve_spec(spec, V6, sites, PARENTS)
     assert "B:58" in caplog.text
+
+
+def test_resolved_conditions_carry_their_ph(sites):
+    resolved = resolve_spec(StateSpec.from_dict(spec_dict()), V6, sites, PARENTS)
+    assert (resolved["on"].ph, resolved["off"].ph) == (7.4, 6.5)
