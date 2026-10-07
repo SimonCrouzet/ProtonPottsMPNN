@@ -54,6 +54,17 @@ from mpnn.metrics.sequence_recovery import _build_canonical_map
 from mpnn.model.layers.graph_embeddings import PottsProteinFeatures
 from mpnn.model.pottsmpnn import PottsMPNN
 from mpnn.potts_inference import prepare_potts_input
+from mpnn.ph.config import SwitchDesignConfig
+from mpnn.ph.engine_adapter import (
+    PottsScorerAdapter,
+    knn_partner_rank,
+    parent_names,
+    positions_in_complex,
+)
+from mpnn.ph.session import DesignInputs, SwitchDesignRun
+from mpnn.ph.session import run_switch_design as _run_switch_design
+from mpnn.ph.states import site_index_from_arrays
+from mpnn.ph.vocab_meta import TokenTable
 
 
 # ---------------------------------------------------------------------------
@@ -759,6 +770,17 @@ def _binder_region_masks(proc_atom_array, token_aa, binder_chain, chainA_t, devi
 # Engine
 # ---------------------------------------------------------------------------
 
+def _to_device(obj, device):
+    """Move every tensor in a nested dict/list/tuple onto ``device``."""
+    if isinstance(obj, torch.Tensor):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_device(v, device) for v in obj)
+    return obj
+
+
 class PottsMPNNPHEngine(MPNNInferenceEngine):
     """Foundry PottsMPNN engine + protonation-aware redesign methods."""
 
@@ -1027,6 +1049,96 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
     # ------------------------------------------------------------------ #
     # Public entrypoint
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # State-specified switch design (mpnn.ph): any pH direction, both sides
+    # ------------------------------------------------------------------ #
+    @torch.no_grad()
+    def run_switch_design(
+        self,
+        *,
+        atom_array: AtomArray,
+        binder_chain: str,
+        config,
+        seed: int = 0,
+    ) -> SwitchDesignRun:
+        """Design the binder against condition-specific protonation states.
+
+        Unlike :meth:`run_ph_redesign` (which pins protonated binder centres and favours
+        them in the complex), the conditions here name the state of any residue, binder
+        or receptor, at each pH, and the objective combines stability, potency and
+        switch terms (see ``mpnn.ph``). ``config`` is a ``SwitchDesignConfig`` or the
+        plain dict it is parsed from.
+
+        Not yet exercised end to end: the wiring below needs HBPLUS and atomworks. The
+        design core (``mpnn.ph``) and the glue helpers are unit-tested on synthetic data.
+        """
+        if not isinstance(config, SwitchDesignConfig):
+            config = SwitchDesignConfig.from_dict(config)
+        ctx = self._build_context(atom_array, binder_chain, base_seed=seed)
+        return _run_switch_design(self._design_inputs(ctx, binder_chain), config)
+
+    def _design_inputs(self, ctx: "_PHContext", binder_chain: str) -> DesignInputs:
+        """Describe the featurised complex to ``mpnn.ph``: tokens, residues, 3 scorers."""
+        names = [str(ctx.encoding.idx_to_token[i]) for i in range(ctx.V)]
+        chain_ids = [str(c) for c in ctx.token_aa.chain_id]
+        res_ids = [int(r) for r in ctx.token_aa.res_id]
+        site_index = site_index_from_arrays(chain_ids, res_ids)
+        receptor_chains = sorted(set(chain_ids) - {binder_chain})
+        if binder_chain not in chain_ids or not receptor_chains:
+            raise ValueError(
+                f"Need the binder chain {binder_chain!r} and at least one other chain "
+                f"(chains present: {sorted(set(chain_ids))})."
+            )
+        binder_scorer, binder_positions = self._isolated_scorer(
+            ctx, [binder_chain], site_index
+        )
+        receptor_scorer, receptor_positions = self._isolated_scorer(
+            ctx, receptor_chains, site_index
+        )
+        return DesignInputs(
+            tokens=ctx.S_native,
+            table=TokenTable(names),
+            chain_ids=chain_ids,
+            res_ids=res_ids,
+            parents=parent_names(
+                names, ctx.canonical_map.tolist(), ctx.S_native.tolist()
+            ),
+            complex_scorer=PottsScorerAdapter(ctx.scorer),
+            binder_scorer=binder_scorer,
+            receptor_scorer=receptor_scorer,
+            binder_positions=binder_positions,
+            receptor_positions=receptor_positions,
+            partner_rank=knn_partner_rank(ctx.eidx_np),
+        )
+
+    def _isolated_scorer(self, ctx: "_PHContext", chains, site_index):
+        """Re-encode ``chains`` alone: ``(scorer, complex positions in its order)``.
+
+        Mirrors :meth:`compute_g_bind`: removing the partner changes each chain's kNN
+        graph, so its energy is not a slice of the complex's. The protonation labeller
+        also runs on the isolated chain although its tokens are discarded (the complex's
+        tokens are used), which is wasteful but keeps the featurisation identical.
+        """
+        atoms = ctx.proc_atom_array
+        if atoms is None:
+            raise RuntimeError("The context carries no processed atom array.")
+        keep = np.isin(np.array([str(c) for c in atoms.chain_id]), list(chains))
+        if not keep.any():
+            raise ValueError(f"No atoms for chains {list(chains)}.")
+        vocab = getattr(self, "_vocab_name", None) or "v4"
+        batch = prepare_potts_input(
+            atoms[keep], structure_noise=0.0, extended_vocab=vocab
+        )
+        network_input = _to_device(batch["network_input"], self.device)
+        out = run_forward_compat(self.model, network_input)
+        isolated = batch["atom_array"]
+        token_isolated = isolated[get_token_starts(isolated)]
+        positions = positions_in_complex(
+            token_isolated.chain_id, token_isolated.res_id, site_index
+        )
+        scorer = PottsScorerAdapter(_PottsScorer(out["etab_out"], out["E_idx"]))
+        return scorer, positions
+
     def run_ph_redesign(
         self,
         *,
@@ -1189,6 +1301,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             chainA_t=chainA_t, binder_chain=binder_chain,
             network_input=network_input, base_seed=int(base_seed),
             region_masks=region_masks,
+            proc_atom_array=proc_atom_array,
         )
 
     # ------------------------------------------------------------------ #
@@ -1652,6 +1765,8 @@ class _PHContext:
     # per-ctx-position boolean masks (length L, True only on binder positions) for
     # {"interface","core","surface"}; empty when classification failed (fail-soft).
     region_masks: Dict[str, torch.Tensor] = field(default_factory=dict)
+    # processed atom array of the complex; lets chains be re-encoded alone (mpnn.ph)
+    proc_atom_array: Any = None
 
     def __post_init__(self) -> None:
         self.chA_free_idx = (self.free_mask & self.chainA_t).nonzero(as_tuple=False).squeeze(1)
