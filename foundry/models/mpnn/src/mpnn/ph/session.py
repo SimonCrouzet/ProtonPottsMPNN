@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
+import numpy as np
 import torch
 
 from mpnn.ph.binding import (
@@ -22,7 +23,9 @@ from mpnn.ph.binding import (
     make_binding_model,
 )
 from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
+from mpnn.ph.neighbourhood import near_positions
 from mpnn.ph.objective import Objective, TermContext
+from mpnn.ph.report import site_report
 from mpnn.ph.search import SearchResult, run_search
 from mpnn.ph.states import (
     ResolvedCondition,
@@ -58,6 +61,8 @@ class DesignInputs:
     binder_positions: Sequence[int]
     receptor_positions: Sequence[int]
     partner_rank: Optional[Callable[[int], Sequence[int]]] = None
+    # the model's contact table E_idx [L, K] (slot 0 = the residue itself); needed by designable.near
+    neighbour_index: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -69,6 +74,15 @@ class SwitchDesignRun:
     designable: List[int]
     conditions: Mapping[str, ResolvedCondition]
     inputs: DesignInputs
+
+    def site_report(self, record, beta: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Per-condition, per-site comparison of the complex with the free partners.
+
+        See :func:`mpnn.ph.report.site_report`; one row per condition and titratable site.
+        """
+        return site_report(
+            self.objective.ctx, self.conditions, self.inputs, record.tokens, beta
+        )
 
     def to_rows(
         self, chain: str, reference_sequence: Optional[str] = None
@@ -137,8 +151,13 @@ def resolve_designable(
     chain_ids: Sequence[str],
     res_ids: Sequence[int],
     spec_sites: Sequence[SiteKey] = (),
+    neighbour_index: Optional[np.ndarray] = None,
 ) -> List[int]:
-    """Positions that may change; residues set by a condition are never designable."""
+    """Positions that may change; residues set by a condition are never designable.
+
+    With ``spec.near`` the set is then restricted to the residues coupled to the named
+    sites in ``neighbour_index`` (the model's contact table).
+    """
     index = site_index_from_arrays(chain_ids, res_ids)
     chains = set(spec.chains)
     unknown = chains - {str(c) for c in chain_ids}
@@ -157,6 +176,21 @@ def resolve_designable(
             len(overlap),
         )
         positions -= fixed_by_spec
+    if spec.near is not None and positions:
+        if neighbour_index is None:
+            raise ValueError(
+                "designable.near needs the model's contact table (DesignInputs.neighbour_index)."
+            )
+        centres = [_lookup(index, text) for text in spec.near.sites]
+        positions = set(
+            near_positions(
+                neighbour_index,
+                centres,
+                positions,
+                k=spec.near.k,
+                max_mutations=spec.near.max_mutations,
+            )
+        )
     if not positions:
         raise ValueError("No designable positions: check 'designable' in the config.")
     return sorted(positions)
@@ -234,6 +268,7 @@ def run_switch_design(
         conditions=conditions,
         on=config.spec.on,
         off=config.spec.off,
+        receptor_view=receptor_view,
     )
     _, terms = config.weights_and_terms()
     objective = Objective(context, terms)
@@ -242,6 +277,7 @@ def run_switch_design(
         inputs.chain_ids,
         inputs.res_ids,
         sorted(config.spec.sites()),
+        inputs.neighbour_index,
     )
     valid_mask = torch.tensor(
         inputs.table.design_mask(config.allow_bare_titratable), dtype=torch.bool

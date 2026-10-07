@@ -43,6 +43,7 @@ def test_design_inputs_describe_the_complex(wired):
         5,
     ]
     assert inputs.partner_rank(0) == [int(j) for j in ctx.eidx_np[0] if j != 0]
+    assert (inputs.neighbour_index == ctx.eidx_np).all()  # for designable.near
 
 
 def test_design_inputs_need_a_receptor_chain(wired):
