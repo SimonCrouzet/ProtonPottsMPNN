@@ -25,3 +25,6 @@ dist/
 benchmarks/data/egfr_pdl1_folded.parquet
 benchmarks/data/egfr_pdl1_rescored.parquet
 benchmarks/data/egfr_pdl1_scrmsd.parquet
+
+# Private working notes (not for the repo)
+notes/
