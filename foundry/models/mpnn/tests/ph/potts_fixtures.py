@@ -121,3 +121,28 @@ class FunctionSystem:
         self, tokens: torch.Tensor, block: Sequence[int]
     ) -> BlockPotentials:
         return probe_block_potentials(self.H_of, tokens, block, self.vocab_size)
+
+
+def random_graph_potts(
+    n_positions: int = 8, n_neighbours: int = 4, vocab_size: int = V, seed: int = 0
+):
+    """Random ``etab [1, L, K, V, V]`` and an asymmetric kNN ``E_idx [1, L, K]``.
+
+    Slot 0 of ``E_idx`` is the position itself, as in the model's own output.
+    """
+    gen = torch.Generator().manual_seed(seed)
+    etab = torch.randn(
+        1,
+        n_positions,
+        n_neighbours,
+        vocab_size,
+        vocab_size,
+        generator=gen,
+        dtype=torch.float64,
+    )
+    e_idx = torch.empty(1, n_positions, n_neighbours, dtype=torch.long)
+    for i in range(n_positions):
+        others = [j for j in range(n_positions) if j != i]
+        chosen = torch.randperm(len(others), generator=gen)[: n_neighbours - 1]
+        e_idx[0, i] = torch.tensor([i] + [others[int(c)] for c in chosen])
+    return etab, e_idx
