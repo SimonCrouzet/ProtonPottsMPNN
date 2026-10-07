@@ -98,5 +98,9 @@ def engine_module():
     finally:
         sys.meta_path.remove(finder)
         sys.path[:] = path_before
+        # Drop only what this import brought in from the project and the stubs: removing
+        # real third-party modules (torch internals) would make a re-import fail.
+        owned = {"mpnn", "foundry", *missing}
         for name in set(sys.modules) - before:
-            del sys.modules[name]
+            if name.split(".")[0] in owned:
+                del sys.modules[name]
