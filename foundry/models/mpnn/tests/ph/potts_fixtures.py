@@ -1,6 +1,6 @@
 """Synthetic Potts systems for atomworks-free tests."""
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import torch
 
@@ -61,7 +61,14 @@ def all_pairs(positions: Sequence[int]) -> List[Tuple[int, int]]:
 class IdealComplex:
     """H_complex = H_binder + H_receptor + H_interface, exactly separable by design."""
 
-    def __init__(self, binder_seed, receptor_seed, interface_seed, internal_scale=1.0):
+    def __init__(
+        self,
+        binder_seed,
+        receptor_seed,
+        interface_seed,
+        internal_scale=1.0,
+        interface_scale=1.0,
+    ):
         self.binder = SyntheticPotts(
             3, V, all_pairs(range(3)), binder_seed, internal_scale
         )
@@ -70,7 +77,8 @@ class IdealComplex:
         )
         gen = torch.Generator().manual_seed(interface_seed)
         self.interface = {
-            (i, j): torch.randn(V, V, generator=gen, dtype=torch.float64)
+            (i, j): interface_scale
+            * torch.randn(V, V, generator=gen, dtype=torch.float64)
             for i in BINDER
             for j in RECEPTOR
         }
@@ -97,3 +105,19 @@ class IdealComplex:
             SystemView(self.binder, BINDER, V),
             SystemView(self.receptor, RECEPTOR, V),
         )
+
+
+class FunctionSystem:
+    """A system defined by an arbitrary pairwise energy function of its own tokens."""
+
+    def __init__(self, energy_fn: Callable[[torch.Tensor], float], vocab_size: int = V):
+        self.energy_fn = energy_fn
+        self.vocab_size = vocab_size
+
+    def H_of(self, tokens: torch.Tensor) -> float:
+        return float(self.energy_fn(tokens))
+
+    def block_potentials(
+        self, tokens: torch.Tensor, block: Sequence[int]
+    ) -> BlockPotentials:
+        return probe_block_potentials(self.H_of, tokens, block, self.vocab_size)

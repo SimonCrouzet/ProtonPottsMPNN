@@ -8,7 +8,7 @@ import pytest
 import torch
 from potts_fixtures import IdealComplex, V
 
-from mpnn.ph.binding import StateBinding
+from mpnn.ph.binding import LinkedEquilibrium, StateBinding, linked_sites_from_spec
 from mpnn.ph.objective import (
     Objective,
     PotencyTerm,
@@ -38,18 +38,21 @@ SPEC = {
 }
 
 
-def make_context(swap_roles=False):
+def make_context(swap_roles=False, binding_model="state_binding"):
     ideal = IdealComplex(1, 2, 3)
     complex_view, binder_view, receptor_view = ideal.views()
-    resolved = resolve_spec(
-        StateSpec.from_dict(SPEC),
-        TokenTable(NAMES),
-        site_index_from_arrays(CHAINS, RES_IDS),
-        PARENTS,
-    )
+    table = TokenTable(NAMES)
+    site_index = site_index_from_arrays(CHAINS, RES_IDS)
+    spec = StateSpec.from_dict(SPEC)
+    resolved = resolve_spec(spec, table, site_index, PARENTS)
+    if binding_model == "state_binding":
+        binding = StateBinding(complex_view, binder_view, receptor_view)
+    else:
+        sites = linked_sites_from_spec(spec, table, site_index, PARENTS)
+        binding = LinkedEquilibrium(complex_view, binder_view, receptor_view, sites)
     on, off = ("off", "on") if swap_roles else ("on", "off")
     return TermContext(
-        binding=StateBinding(complex_view, binder_view, receptor_view),
+        binding=binding,
         binder_view=binder_view,
         complex_view=complex_view,
         conditions=resolved,
@@ -325,3 +328,17 @@ def test_estimate_term_scale_uses_finite_spread_and_best_value():
     assert estimate_term_scale([torch.tensor([3.0])], center=3.0) == TermScale(
         center=3.0
     )
+
+
+@pytest.mark.parametrize(
+    "term", [PotencyTerm(), SwitchTerm(), SwitchTerm(off_margin=0.2)]
+)
+def test_linked_equilibrium_drives_terms_through_each_conditions_ph(term):
+    ctx = make_context(binding_model="linked_equilibrium")
+    joint = term.block_values(ctx, BASE, DESIGN_BLOCK)
+    for values, tokens in assignments():
+        assert joint[values].item() == pytest.approx(term.value(ctx, tokens), abs=1e-9)
+    on_ph = ctx.ph_of("on")
+    assert on_ph == 7.4
+    expected = ctx.binding.energy(ctx.tokens_in(BASE, "on"), ph=on_ph)
+    assert PotencyTerm().value(ctx, BASE) == pytest.approx(expected)
