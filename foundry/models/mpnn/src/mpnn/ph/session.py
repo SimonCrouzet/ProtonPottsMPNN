@@ -9,7 +9,7 @@ structure (see ``PottsMPNNPHEngine.run_switch_design``); tests supply synthetic 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -26,7 +26,7 @@ from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
 from mpnn.ph.ensemble import EnsembleMember, EnsembleObjective
 from mpnn.ph.neighbourhood import cap_by_rank, near_ranks
 from mpnn.ph.objective import Objective, TermContext
-from mpnn.ph.report import site_report
+from mpnn.ph.report import site_report, validate_report_tokens
 from mpnn.ph.search import SearchResult, run_search
 from mpnn.ph.states import (
     ResolvedCondition,
@@ -75,6 +75,7 @@ class SwitchDesignRun:
     designable: List[int]
     conditions: Mapping[str, ResolvedCondition]
     inputs: DesignInputs
+    report_tokens: Dict[str, Any] = field(default_factory=dict, kw_only=True)
 
     def site_report(self, record, beta: Optional[float] = None) -> List[Dict[str, Any]]:
         """Per-condition, per-site comparison of the complex with the free partners.
@@ -82,7 +83,12 @@ class SwitchDesignRun:
         See :func:`mpnn.ph.report.site_report`; one row per condition and titratable site.
         """
         return site_report(
-            self.objective.ctx, self.conditions, self.inputs, record.tokens, beta
+            self.objective.ctx,
+            self.conditions,
+            self.inputs,
+            record.tokens,
+            beta,
+            self.report_tokens,
         )
 
     def to_rows(
@@ -294,6 +300,7 @@ def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
     site_index = site_index_from_arrays(inputs.chain_ids, inputs.res_ids)
     conditions = resolve_spec(config.spec, inputs.table, site_index, inputs.parents)
     _check_switch_can_differ(config, conditions)
+    validate_report_tokens(inputs.table, config.report_tokens)
 
     complex_view = SystemView(inputs.complex_scorer, range(n_positions), vocab_size)
     binder_view = SystemView(inputs.binder_scorer, inputs.binder_positions, vocab_size)
@@ -351,7 +358,14 @@ def run_switch_design(
     objective, conditions, designable, ranks = _prepare_state(inputs, config)
     designable = cap_by_rank(designable, ranks, _cap(config.designable))
     result = _search(objective, inputs, designable, config)
-    return SwitchDesignRun(result, objective, designable, conditions, inputs)
+    return SwitchDesignRun(
+        result,
+        objective,
+        designable,
+        conditions,
+        inputs,
+        report_tokens=dict(config.report_tokens),
+    )
 
 
 # ---- several target states sharing one binder ------------------------------------------
@@ -376,7 +390,12 @@ class EnsembleRun(SwitchDesignRun):
         for member in self.members.values():
             tokens = self.objective.tokens_for(member, record.tokens)
             for row in site_report(
-                member.objective.ctx, member.conditions, member.inputs, tokens, beta
+                member.objective.ctx,
+                member.conditions,
+                member.inputs,
+                tokens,
+                beta,
+                self.report_tokens,
             ):
                 rows.append({"state": member.name, **row})
         return rows
@@ -473,5 +492,6 @@ def run_switch_design_ensemble(
         designable,
         members[reference_name].conditions,
         reference,
-        members,
+        members=members,
+        report_tokens=dict(config.report_tokens),
     )
