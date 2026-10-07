@@ -1158,6 +1158,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             binder_positions=binder_positions,
             receptor_positions=receptor_positions,
             partner_rank=knn_partner_rank(ctx.eidx_np),
+            neighbour_index=ctx.eidx_np,
         )
 
     def _isolated_scorer(self, ctx: "_PHContext", chains, site_index):
