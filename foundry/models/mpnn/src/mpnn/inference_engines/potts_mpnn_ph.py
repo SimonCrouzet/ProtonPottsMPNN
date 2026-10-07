@@ -536,7 +536,7 @@ class PHDesignOutput:
     ``final_potts_energy`` is the whole-system Potts Hamiltonian (lower = stabler).
     ``selective_energy`` is the centre RES-P-vs-RES-D gap (lower = RES-P preferred).
     ``global_protonation_dH`` is the binder's H(all titratable→prot) − H(→deprot)
-    (lower = prefers protonated / low-pH-favoured). Placement metrics describe the chosen site.
+    (lower = prefers protonated). Placement metrics describe the chosen site.
     """
 
     binder_chain: str
@@ -2856,8 +2856,10 @@ def _global_protonation_dH(ctx, seq) -> Optional[float]:
     """Binder pH-response: H(all binder titratable -> protonated) - H(-> deprotonated).
 
     Neutral His = mean over {HID, HIE} (v3/v4 tautomers) or the single HIS-S token (v6). Lower =
-    prefers protonated / low-pH-favoured; higher (positive) = prefers deprotonated / neutral (our
-    goal). Returns None if the vocab lacks the needed microstates.
+    the binder prefers its titratable residues protonated; higher = deprotonated/neutral. Block
+    descent MINIMISES this term when ``global_weight`` > 0 (so a positive weight pushes toward
+    protonation); the sign of the weight sets the direction. Returns None if the vocab lacks the
+    needed microstates.
     """
     t2i = ctx.encoding.token_to_idx
     base_needed = ("HIS-P", "ASP-P", "ASP-D", "GLU-P", "GLU-D")

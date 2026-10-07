@@ -122,6 +122,15 @@ crit = PHDesignCriteria(
 design_set = engine.run_ph_redesign(atom_array=aa, binder_chain="A", criteria_list=[crit], seed=0)
 ```
 
+**Direction.** The selectivity term is Σ(e_P − e_D) over the pinned centres, evaluated in the bound
+complex, and the optimiser lowers it. The bound state therefore prefers the protonated centre: binding is
+stronger at low pH and weakens once the centre loses its proton. `run_ph_redesign` has no switch for the
+opposite direction; `run_switch_design` (below) does, by swapping which condition is `on`. For a design
+sweep, `PHDesignCriteria.interface_distance` (default 6 Å, CA–CA) sets the cutoff of the `interface`
+placement region: raise it when loops reach over the target, otherwise the region can come out empty.
+`design_set.to_rows(reference_sequence=...)` returns one plain dict per design (`canonical_sequence`,
+`centers`, `n_mutations`, `selective_energy`, `potts_energy`, …).
+
 The notebook opens up the internals: **placement** (which state goes where, and how many centres — acids to
 the core, `HIS-P` to the surface) and the **block-descent trajectory** (stability + selectivity vs. step).
 `_build_context` featurises through `prepare_potts_input` (the same transform pipeline the labeller/training
