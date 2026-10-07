@@ -659,18 +659,26 @@ class PHDesignSet(list):
         return PHDesignSet(sorted(self, key=lambda d: d.final_potts_energy))
 
     def deduped(self) -> "PHDesignSet":
-        """Drop exact repeats (same id AND same sequence); keep, under a ``~k`` id suffix, designs that
-        share an id but differ in sequence. First occurrence wins, so the order of ``self`` decides."""
-        seen: Dict[str, List[tuple]] = {}
+        """Drop exact repeats (same id AND same sequence); keep designs that share an id but differ
+        in sequence under a ``~k`` id suffix. First occurrence wins, so the order of ``self`` decides.
+
+        Every id already present in ``self`` is reserved, so a new suffix never lands on another
+        design's id, and a record that needs a new id is copied: the inputs are not modified."""
+        taken = {d.design_id() for d in self}
+        by_id: Dict[str, set] = {}
         out = PHDesignSet()
         for d in self:
             did, seq = d.design_id(), tuple(d.extended_tokens)
-            variants = seen.setdefault(did, [])
-            if seq in variants:
+            known = by_id.setdefault(did, set())
+            if seq in known:
                 continue
-            if variants:
-                d.id_suffix = f"~{len(variants) + 1}"
-            variants.append(seq)
+            if known:
+                k = 2
+                while f"{did}~{k}" in taken:
+                    k += 1
+                d = replace(d, id_suffix=d.id_suffix + f"~{k}")
+                taken.add(d.design_id())
+            known.add(seq)
             out.append(d)
         return out
 
