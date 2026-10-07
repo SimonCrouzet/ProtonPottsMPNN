@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -24,7 +24,7 @@ from mpnn.ph.binding import (
 )
 from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
 from mpnn.ph.ensemble import EnsembleMember, EnsembleObjective
-from mpnn.ph.neighbourhood import near_positions
+from mpnn.ph.neighbourhood import cap_by_rank, near_ranks
 from mpnn.ph.objective import Objective, TermContext
 from mpnn.ph.report import site_report
 from mpnn.ph.search import SearchResult, run_search
@@ -147,17 +147,19 @@ class SwitchDesignRun:
         }
 
 
-def resolve_designable(
+def designable_with_ranks(
     spec: DesignableSpec,
     chain_ids: Sequence[str],
     res_ids: Sequence[int],
     spec_sites: Sequence[SiteKey] = (),
     neighbour_index: Optional[np.ndarray] = None,
-) -> List[int]:
-    """Positions that may change; residues set by a condition are never designable.
+) -> Tuple[List[int], Dict[int, int]]:
+    """Designable positions before any ``near.max_mutations`` cap, with their closeness ranks.
 
-    With ``spec.near`` the set is then restricted to the residues coupled to the named
-    sites in ``neighbour_index`` (the model's contact table).
+    Residues set by a condition are never designable. With ``spec.near`` the set is
+    restricted to the residues coupled to the named sites in ``neighbour_index`` (the
+    model's contact table), and ``ranks`` orders them from closest; without it ``ranks`` is
+    empty. The cap is applied separately so that several target states can share one.
     """
     index = site_index_from_arrays(chain_ids, res_ids)
     chains = set(spec.chains)
@@ -183,18 +185,31 @@ def resolve_designable(
                 "designable.near needs the model's contact table (DesignInputs.neighbour_index)."
             )
         centres = [_lookup(index, text) for text in spec.near.sites]
-        positions = set(
-            near_positions(
-                neighbour_index,
-                centres,
-                positions,
-                k=spec.near.k,
-                max_mutations=spec.near.max_mutations,
-            )
-        )
+        ranks = near_ranks(neighbour_index, centres, positions, k=spec.near.k)
+        positions = set(ranks)
+    else:
+        ranks = {}
     if not positions:
         raise ValueError("No designable positions: check 'designable' in the config.")
-    return sorted(positions)
+    return sorted(positions), ranks
+
+
+def _cap(spec: DesignableSpec) -> int:
+    return spec.near.max_mutations if spec.near is not None else 0
+
+
+def resolve_designable(
+    spec: DesignableSpec,
+    chain_ids: Sequence[str],
+    res_ids: Sequence[int],
+    spec_sites: Sequence[SiteKey] = (),
+    neighbour_index: Optional[np.ndarray] = None,
+) -> List[int]:
+    """Positions that may change: :func:`designable_with_ranks` with the cap applied."""
+    positions, ranks = designable_with_ranks(
+        spec, chain_ids, res_ids, spec_sites, neighbour_index
+    )
+    return cap_by_rank(positions, ranks, _cap(spec))
 
 
 def _lookup(index: Mapping[SiteKey, int], text: str) -> int:
@@ -271,14 +286,14 @@ def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
     )
     _, terms = config.weights_and_terms()
     objective = Objective(context, terms)
-    designable = resolve_designable(
+    designable, ranks = designable_with_ranks(
         config.designable,
         inputs.chain_ids,
         inputs.res_ids,
         sorted(config.spec.sites()),
         inputs.neighbour_index,
     )
-    return objective, conditions, designable
+    return objective, conditions, designable, ranks
 
 
 def _search(objective, inputs, designable, config) -> SearchResult:
@@ -305,7 +320,8 @@ def run_switch_design(
     inputs: DesignInputs, config: SwitchDesignConfig
 ) -> SwitchDesignRun:
     """Resolve the states, build the objective and run the planned search."""
-    objective, conditions, designable = _prepare_state(inputs, config)
+    objective, conditions, designable, ranks = _prepare_state(inputs, config)
+    designable = cap_by_rank(designable, ranks, _cap(config.designable))
     result = _search(objective, inputs, designable, config)
     return SwitchDesignRun(result, objective, designable, conditions, inputs)
 
@@ -390,6 +406,7 @@ def run_switch_design_ensemble(
     reference_name, reference = names[0], inputs_by_state[names[0]]
     members: Dict[str, EnsembleMember] = {}
     designable_keys = set()
+    shared_ranks: Dict[int, int] = {}
     reference_keys = _binder_keys(reference)
     for name in names:
         inputs = inputs_by_state[name]
@@ -399,7 +416,7 @@ def run_switch_design_ensemble(
             else _check_shared_binder(reference_name, reference, name, inputs)
         )
         try:
-            objective, conditions, designable = _prepare_state(inputs, config)
+            objective, conditions, designable, ranks = _prepare_state(inputs, config)
         except (ValueError, KeyError) as err:
             raise type(err)(f"State {name!r}: {err}") from None
         reverse = {v: k for k, v in position_map.items()}
@@ -410,11 +427,17 @@ def run_switch_design_ensemble(
                 "residues; only the shared binder can be designed in an ensemble."
             )
         designable_keys |= {reverse[p] for p in designable}
+        for p, rank in ranks.items():  # best rank over the states, on the shared binder
+            if p in reverse:
+                shared_ranks[reverse[p]] = min(rank, shared_ranks.get(reverse[p], rank))
         members[name] = EnsembleMember(
             name, objective, conditions, inputs, inputs.tokens.clone(), position_map
         )
     objective = EnsembleObjective(list(members.values()), reduce=config.target_reduce)
-    designable = sorted(designable_keys)
+    # one total cap on the shared set; capping each state and uniting would exceed it
+    designable = cap_by_rank(
+        sorted(designable_keys), shared_ranks, _cap(config.designable)
+    )
     result = _search(objective, reference, designable, config)
     return EnsembleRun(
         result,
