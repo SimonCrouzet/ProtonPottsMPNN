@@ -208,6 +208,15 @@ best = run.result.records[0]
 run.describe(best, "A")                    # canonical sequence + token names of the binder
 ```
 
+To redesign only around a residue, add `"near": {"sites": ["B:409"], "k": 16, "max_mutations": 20}` under
+`designable`. The sites may be on the target; the binder positions kept are those the model couples to them,
+the same neighbourhood that `neighbour_k` and `max_mutations` define in `run_ph_redesign`. After a run,
+`run.site_report(best)` lists, for each condition and titratable site, the state the condition imposes
+(`state_token`), the protonated-versus-deprotonated energy gap in the complex and in the free partners
+(`gap_complex`, `gap_free`) and their difference (`binding_gap`; negative means binding favours the protonated
+state, raising its apparent pKa), and with `linked_equilibrium` the apparent pKa of the free and the bound
+state. All values are in model units.
+
 Unknown config keys raise instead of being ignored. Designed positions take only non-titratable residues
 unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state unspecified"). The design core is
 unit-tested on synthetic Potts tables without the heavy environment:
