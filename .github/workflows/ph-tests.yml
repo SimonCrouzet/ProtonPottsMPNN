@@ -1,0 +1,38 @@
+name: ph-tests
+
+# Lint and test the explicit-state design core (mpnn.ph) and the engine wiring around it.
+# The tests run on synthetic Potts tables; third-party packages that are not installed
+# (atomworks, biotite, ...) are stubbed by tests/ph/engine_imports.py, so this job needs
+# only torch, numpy, pytest and ruff.
+
+on:
+  pull_request:
+    paths:
+      - "foundry/models/mpnn/src/mpnn/ph/**"
+      - "foundry/models/mpnn/src/mpnn/inference_engines/potts_mpnn_ph.py"
+      - "foundry/models/mpnn/tests/ph/**"
+      - ".github/workflows/ph-tests.yml"
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: foundry/models/mpnn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install numpy pytest ruff
+      - name: Ruff
+        run: |
+          ruff check --config ../../pyproject.toml src/mpnn/ph tests/ph
+          ruff format --config ../../pyproject.toml --check src/mpnn/ph tests/ph
+      - name: Tests
+        run: PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -p no:cacheprovider -q
