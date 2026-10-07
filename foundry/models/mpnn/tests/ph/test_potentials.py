@@ -97,3 +97,23 @@ def test_empty_block_is_a_scalar(system, tokens):
     pot = probe_block_potentials(system.H_of, tokens, [], V)
     assert pot.joint().shape == ()
     assert pot.joint().item() == pytest.approx(system.H_of(tokens))
+
+
+def meta_block(n_block=2, vocab=V):
+    """Potentials on the 'meta' device: a CPU-only stand-in for a second device (CUDA)."""
+    unary = torch.zeros(n_block, vocab, dtype=torch.float64, device="meta")
+    table = torch.zeros(vocab, vocab, dtype=torch.float64, device="meta")
+    return BlockPotentials(unary, {(0, 1): table}, const=0.5)
+
+
+def test_every_tensor_stays_on_the_device_of_the_potentials():
+    wide = meta_block().embedded(4, [1, 3])
+    assert wide.unary.device.type == "meta"
+    assert all(t.device.type == "meta" for t in wide.edges.values())
+    assert wide.joint().device.type == "meta"
+    assert BlockPotentials.zeros(2, V, device="meta").unary.device.type == "meta"
+
+
+def test_adding_potentials_keeps_the_device():
+    total = meta_block() + meta_block()
+    assert total.unary.device.type == "meta" and total.joint().device.type == "meta"

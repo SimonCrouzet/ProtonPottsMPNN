@@ -86,7 +86,11 @@ class SystemView:
         ]
         if not present:
             return BlockPotentials(
-                torch.zeros(n, self.vocab_size, dtype=torch.float64), {}, total
+                torch.zeros(
+                    n, self.vocab_size, dtype=torch.float64, device=tokens.device
+                ),
+                {},
+                total,
             )
         slots = [bi for bi, _ in present]
         sub_block = [local for _, local in present]
