@@ -13,7 +13,7 @@ MICROSTATE MATCH = fraction of the design's pinned centres whose re-predicted la
 CPU only (HBPLUS + FLAML); FLAML is fork-unsafe → one process per shard, serial. RF3 cifs carry NaN
 b-factors that break HBPLUS's PDB write, so each fold is cleaned to a temp PDB first.
 
-  SMOKE:  LIMIT=1 HBPLUS_PATH=/novo/users/cpjb/tools/hbplus/hbplus PYTHONPATH=. ./dpo_potts/bin/python sandbox/pdbval/annotate_denovo_folds.py
+  SMOKE:  LIMIT=1 HBPLUS_PATH=/path/to/hbplus PYTHONPATH=. ./dpo_potts/bin/python sandbox/pdbval/annotate_denovo_folds.py
   SHARD:  NUM_SHARDS=40 SHARD_ID=i ... (writes pdbval_denovo_phannot_shard{i}.parquet; then --aggregate)
 """
 import glob
