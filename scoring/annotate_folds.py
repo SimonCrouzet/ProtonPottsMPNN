@@ -41,6 +41,11 @@ LIMIT = int(os.environ.get("LIMIT", "0"))
 _HIS, _ACID = {"HIS"}, {"ASP", "GLU"}
 
 
+def _np(x):
+    """A NumPy array from a tensor on any device (the features sit on the GPU when one is visible)."""
+    return x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+
+
 def _clean_to_pdb(cif):
     import biotite.structure as struc
     import biotite.structure.io.pdbx as pdbx
@@ -82,8 +87,8 @@ def annotate(cif, binder_len, centers):
             binder_ch = c; break
     is_binder = (chain == binder_ch) if binder_ch is not None else np.ones(L, bool)
 
-    hb = _edges(np.asarray(ni["hbond_donates_to"]).squeeze(0)) | _edges(np.asarray(ni["hbond_accepts_from"]).squeeze(0))
-    sb = _edges(np.asarray(ni["salt_partners"]).squeeze(0))
+    hb = _edges(_np(ni["hbond_donates_to"]).squeeze(0)) | _edges(_np(ni["hbond_accepts_from"]).squeeze(0))
+    sb = _edges(_np(ni["salt_partners"]).squeeze(0))
 
     def _count(edges, cls):
         n = 0
@@ -103,8 +108,8 @@ def annotate(cif, binder_len, centers):
     # pH-GATED bonds at the pinned CENTRES (bi-directional, state-specific): the H-bonds the centre's TARGET
     # protonation state uniquely enables — protonated (HIS-P/ASP-P/GLU-P) → the titratable proton DONATES;
     # neutral His (HIS-S) → the lone pair ACCEPTS (lost on protonation). Partner unrestricted (Thr/acid/…).
-    don = np.asarray(ni["hbond_donates_to"]).squeeze(0)
-    acc = np.asarray(ni["hbond_accepts_from"]).squeeze(0)
+    don = _np(ni["hbond_donates_to"]).squeeze(0)
+    acc = _np(ni["hbond_accepts_from"]).squeeze(0)
     tok_at = {int(rd): t for t, (ch, rd) in enumerate(zip(chain, resid)) if ch == binder_ch}
     gated = []
     for rid, pt in centers:
