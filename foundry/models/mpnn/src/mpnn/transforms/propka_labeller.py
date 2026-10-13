@@ -51,6 +51,11 @@ def _import_propka():
     return propka.run
 
 
+def require_propka() -> None:
+    """Raise now, with the install instruction, if PROPKA is missing."""
+    _import_propka()
+
+
 def _single_char_chains(atom_array):
     """A copy with one-character chain ids (the PDB format needs them) and the way back."""
     original = [str(c) for c in atom_array.chain_id]

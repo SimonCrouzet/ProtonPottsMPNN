@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+import sys
 
 import pytest
 from objective_fixtures import NAMES, PARENTS, SPEC
@@ -92,6 +93,14 @@ def test_propka_pka_values_are_required_when_propka_is_the_source():
         run_switch_design(make_inputs(), make_config(protonation=propka, **LINKED))
     # the state-based models never look at them
     run_switch_design(make_inputs(), make_config(protonation=propka))
+
+
+def test_a_missing_propka_stops_the_run_before_featurising(engine, monkeypatch):
+    monkeypatch.setitem(sys.modules, "propka", None)
+    monkeypatch.setitem(sys.modules, "propka.run", None)
+    with pytest.raises(ImportError, match="pip install propka"):
+        engine._protonation_classifier(ProtonationSource("propka", 7.4))
+    assert engine._protonation_classifier(ProtonationSource()) is None  # EV6 needs none
 
 
 def test_engine_helpers_choose_the_labeller_and_the_pka_runs(engine):

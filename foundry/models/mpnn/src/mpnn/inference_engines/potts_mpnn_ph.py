@@ -848,8 +848,9 @@ def _protonation_classifier(protonation: ProtonationSource):
     """The labeller a ProtonationSource asks for: None keeps the vocabulary's own (EV6)."""
     if protonation.source == "ev6":
         return None
-    from mpnn.transforms.propka_labeller import PropkaLabeller
+    from mpnn.transforms.propka_labeller import PropkaLabeller, require_propka
 
+    require_propka()  # fail here, not after the structure has been parsed
     return PropkaLabeller(ph=protonation.ph, margin=protonation.margin)
 
 
