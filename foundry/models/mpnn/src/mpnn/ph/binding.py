@@ -224,7 +224,7 @@ def linked_sites_from_spec(
             pka = float(pka_by_parent[parent])
             if pka_by_site:
                 logger.warning(
-                    "reference_pka site=%s res=%s pka=%.1f source=constant reason=no_site_value",
+                    "No per-site pKa for %s (%s), using the per-type value %.1f.",
                     key,
                     parent,
                     pka,

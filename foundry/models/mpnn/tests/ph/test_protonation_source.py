@@ -87,9 +87,7 @@ def test_a_sites_own_pka_beats_the_value_for_its_residue_type(caplog):
     assert sites(by_site={A1: 5.2, B2: 6.9}, by_parent={"HIS": 6.0}) == {0: 5.2, 4: 6.9}
     with caplog.at_level(logging.WARNING):  # one site lacks its own value
         assert sites(by_site={A1: 5.2}, by_parent={"HIS": 6.0}) == {0: 5.2, 4: 6.0}
-    assert (
-        "site=B:2 res=HIS pka=6.0 source=constant reason=no_site_value" in caplog.text
-    )
+    assert "No per-site pKa for B:2 (HIS), using the per-type value 6.0." in caplog.text
     with pytest.raises(ValueError, match="must be finite"):
         sites(by_site={A1: float("nan"), B2: 6.9})
 
@@ -143,7 +141,7 @@ def test_the_logs_say_where_each_reference_pka_comes_from(caplog):
         run_switch_design(with_pka(), make_config(protonation=PROPKA_PKA, **LINKED))
     text = caplog.text
     assert (
-        "reference_pka site=A:1 res=HIS pka=5.20 source=propka_free constant=6.5"
+        "Reference pKa of A:1 (HIS): 5.20 from PROPKA on the free partner; the per-type constant is 6.5."
         in text
     )
     assert len(pkad_caveats(caplog)) == 1  # His: PROPKA did not beat the constant
@@ -153,13 +151,13 @@ def test_the_logs_say_where_each_reference_pka_comes_from(caplog):
     )
     with caplog.at_level(logging.INFO, logger="mpnn.ph.session"):
         run_switch_design(make_inputs(), make_config(**by_hand))
-    assert "source=pka_by_site" in caplog.text
+    assert "from binding_options.pka_by_site" in caplog.text
     assert not pkad_caveats(caplog)  # chosen by hand: no caveat
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="mpnn.ph.session"):
         run_switch_design(make_inputs(), make_config(**LINKED))
     assert (
-        "reference_pka site=" not in caplog.text
+        "Reference pKa of" not in caplog.text
     )  # the constants are the default: nothing to explain
 
 
@@ -196,9 +194,12 @@ def test_engine_helpers_choose_the_labeller_and_the_pka_runs(engine):
     text = engine._describe_protonation(
         ProtonationSources("propka", "propka", 7.4, 0.5)
     )
-    assert "states=propka ph=7.4 margin=0.5" in text and "reference_pka=propka" in text
-    assert "states=ev6 reference_pka=constant" in engine._describe_protonation(
-        ProtonationSources()
+    assert (
+        "PROPKA (pH 7.4, margin 0.5)" in text and "PROPKA on the free partners" in text
+    )
+    assert (
+        "starting states EV6, reference pKa per-type constants"
+        in engine._describe_protonation(ProtonationSources())
     )
 
 

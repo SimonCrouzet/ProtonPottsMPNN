@@ -187,7 +187,10 @@ def designable_with_ranks(
     fixed_by_spec = {index[site] for site in spec_sites if site in index}
     overlap = positions & fixed_by_spec
     if overlap:
-        logger.warning("designable removed=%d reason=set_by_condition", len(overlap))
+        logger.warning(
+            "Removing %d residue(s) set by a condition from the designable set.",
+            len(overlap),
+        )
         positions -= fixed_by_spec
     if spec.near is not None and positions:
         if neighbour_index is None:
@@ -230,8 +233,9 @@ def _lookup(index: Mapping[SiteKey, int], text: str) -> int:
 
 
 PKAD_HIS_CAVEAT = (
-    "reference_pka res=HIS source=propka not_better_than_constant "
-    "(PKAD r=0.15 mae=1.03 vs 0.80); set sites with binding_options.pka_by_site"
+    "PROPKA's reference pKa for His did not beat the per-type constant on PKAD "
+    "(Pearson r 0.15, mean error 1.03 against 0.80). Set His sites with "
+    "binding_options.pka_by_site if you prefer another value."
 )
 
 
@@ -252,11 +256,11 @@ def _reference_pka_by_site(
                 "(DesignInputs.site_pka); the engine computes them."
             )
         by_site.update(inputs.site_pka)
-        origin.update({key: "propka_free" for key in inputs.site_pka})
+        origin.update({key: "PROPKA on the free partner" for key in inputs.site_pka})
     for text, value in (explicit or {}).items():
         key = SiteKey.parse(text)
         by_site[key] = float(value)
-        origin[key] = "pka_by_site"
+        origin[key] = "binding_options.pka_by_site"
     site_index = site_index_from_arrays(inputs.chain_ids, inputs.res_ids)
     from_propka_his = False
     for key in sorted(config.spec.sites()):
@@ -265,14 +269,14 @@ def _reference_pka_by_site(
         parent = inputs.parents[site_index[key]]
         constant = DEFAULT_MODEL_PKA.get(parent)
         logger.info(
-            "reference_pka site=%s res=%s pka=%.2f source=%s constant=%s",
+            "Reference pKa of %s (%s): %.2f from %s; the per-type constant is %s.",
             key,
             parent,
             by_site[key],
             origin[key],
-            constant if constant is not None else "none",
+            constant if constant is not None else "not defined",
         )
-        from_propka_his |= parent == "HIS" and origin[key] == "propka_free"
+        from_propka_his |= parent == "HIS" and origin[key].startswith("PROPKA")
     if from_propka_his:
         logger.warning(PKAD_HIS_CAVEAT)
     return by_site or None

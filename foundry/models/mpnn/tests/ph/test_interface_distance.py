@@ -50,7 +50,7 @@ def test_region_masks_are_recomputed_per_cutoff_and_cached(engine, monkeypatch, 
 
     with caplog.at_level("WARNING", logger=engine.__name__):
         assert not ctx.region_mask(["core"], 8.0).any()
-    assert "free_positions=0" in caplog.text
+    assert "selects no free binder position" in caplog.text
 
 
 def test_a_non_default_cutoff_needs_the_processed_atom_array(engine):

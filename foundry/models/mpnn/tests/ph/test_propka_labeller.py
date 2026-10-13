@@ -141,9 +141,9 @@ def test_the_labeller_logs_what_it_did_and_warns_once(
     warnings = [r.getMessage() for r in ours if r.levelno == logging.WARNING]
     assert (
         len(warnings) == 1
-        and "trained_on=ev6" in warnings[0]
-        and "his=0.62" in warnings[0]
+        and "trained on EV6 labels" in warnings[0]
+        and "0.62" in warnings[0]
     )
     summaries = [r.getMessage() for r in ours if r.levelno == logging.INFO]
     assert len(summaries) == 2
-    assert "ph=7.40" in summaries[0] and "HIS=S:3" in summaries[0]
+    assert "pH 7.40" in summaries[0] and "HIS 3 neutral" in summaries[0]

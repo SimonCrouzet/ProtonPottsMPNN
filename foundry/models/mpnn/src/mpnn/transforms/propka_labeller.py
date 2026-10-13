@@ -32,9 +32,11 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _CAVEAT = (
-    "propka.states labels=propka trained_on=ev6 "
-    "neutron_roc_auc his=0.62 acid=0.78 (README: Protonation source)"
+    "Starting states come from PROPKA, but the checkpoint was trained on EV6 labels. Against "
+    "experiment PROPKA labels are weak (neutron structures: ROC AUC 0.62 for His, 0.78 for "
+    "Asp/Glu); see the README, Protonation source."
 )
+_WORDS = {"P": "protonated", "S": "neutral", "D": "deprotonated", "A": "ambiguous"}
 _caveat_shown = False
 
 # PROPKA reports a carboxylate group for every Asp, Glu and C terminus, so a side chain is told
@@ -156,7 +158,9 @@ class PropkaLabeller:
         unscored = [key for key in residues if key not in pka]
         if unscored:
             logger.warning(
-                "propka.states missing_pka n=%d label=A first=%s", len(unscored), unscored[:5]
+                "PROPKA gave no pKa for %d His/Asp/Glu residue(s), so they are labelled ambiguous. First: %s.",
+                len(unscored),
+                unscored[:5],
             )
         tokens = {
             key: token_from_pka(key[2], pka.get(key, math.nan), self.ph, self.margin) for key in residues
@@ -173,14 +177,15 @@ class PropkaLabeller:
         for (_, _, name), token in tokens.items():
             counts = by_type.setdefault(name, {})
             counts[token[-1]] = counts.get(token[-1], 0) + 1
-        summary = " ".join(
-            f"{name}=" + ",".join(f"{letter}:{n}" for letter, n in sorted(counts.items()))
+        summary = ", ".join(
+            f"{name} {n} {_WORDS[letter]}"
             for name, counts in sorted(by_type.items())
+            for letter, n in sorted(counts.items())
         )
         logger.info(
-            "propka.states chains=%s ph=%.2f margin=%.2f %s",
+            "PROPKA states for chain(s) %s at pH %.2f, margin %.2f: %s.",
             ",".join(chains),
             self.ph,
             self.margin,
-            summary or "none",
+            summary or "no His, Asp or Glu",
         )

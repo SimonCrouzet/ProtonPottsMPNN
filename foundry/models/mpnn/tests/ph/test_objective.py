@@ -173,7 +173,7 @@ def test_one_active_term_collapses_even_when_pareto_is_requested(caplog):
     assert (plan.mode, plan.term_names) == ("single", ("switch",))
     assert plan.weight_vectors.tolist() == [[1.0]]
     assert plan.scalarisation == "weighted_sum"
-    assert "pareto_with_one_active_term" in caplog.text
+    assert "single-objective" in caplog.text
 
 
 def test_explicit_weights_make_one_run():
