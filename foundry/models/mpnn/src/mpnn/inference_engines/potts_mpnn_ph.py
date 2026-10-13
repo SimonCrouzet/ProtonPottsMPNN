@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """PottsMPNN-pH redesign engine (foundry wrapper).
 
 Mirrors the ``MPNNWithLogProbs`` pattern: subclass the foundry PottsMPNN inference engine
@@ -34,6 +32,8 @@ Conventions (unify the Potts energy head and the decoder log-prob field):
   (the foundry's own 21-token ``_decode_sequences`` cannot render the 11 protonation tokens).
 """
 
+from __future__ import annotations
+
 import copy
 import logging
 import multiprocessing as mp
@@ -49,12 +49,10 @@ import torch.nn.functional as F
 from atomworks.constants import DICT_THREE_TO_ONE, UNKNOWN_AA
 from atomworks.ml.utils.token import get_token_starts
 from biotite.structure import AtomArray
-
 from mpnn.inference_engines.potts_mpnn import MPNNInferenceEngine
 from mpnn.metrics.sequence_recovery import _build_canonical_map
 from mpnn.model.layers.graph_embeddings import PottsProteinFeatures
 from mpnn.model.pottsmpnn import PottsMPNN
-from mpnn.potts_inference import prepare_potts_input
 from mpnn.ph.config import SwitchDesignConfig
 from mpnn.ph.engine_adapter import (
     PottsScorerAdapter,
@@ -67,6 +65,7 @@ from mpnn.ph.session import run_switch_design as _run_switch_design
 from mpnn.ph.session import run_switch_design_ensemble as _run_switch_design_ensemble
 from mpnn.ph.states import site_index_from_arrays
 from mpnn.ph.vocab_meta import TokenTable
+from mpnn.potts_inference import prepare_potts_input
 
 logger = logging.getLogger(__name__)
 
@@ -1110,9 +1109,6 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
                 for ec, eb in zip(E_cplx, E_bind)]
 
     # ------------------------------------------------------------------ #
-    # Public entrypoint
-    # ------------------------------------------------------------------ #
-    # ------------------------------------------------------------------ #
     # State-specified switch design (mpnn.ph): any pH direction, both sides
     # ------------------------------------------------------------------ #
     @torch.no_grad()
@@ -1235,6 +1231,9 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         scorer = PottsScorerAdapter(_PottsScorer(out["etab_out"], out["E_idx"]))
         return scorer, positions
 
+    # ------------------------------------------------------------------ #
+    # Public entrypoint
+    # ------------------------------------------------------------------ #
     def run_ph_redesign(
         self,
         *,
