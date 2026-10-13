@@ -5,7 +5,7 @@ import itertools
 import pytest
 import torch
 from objective_fixtures import BASE, DESIGN_BLOCK, NAMES, PARENTS, SPEC
-from potts_fixtures import IdealComplex
+from potts_fixtures import FunctionSystem, IdealComplex
 
 from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
 from mpnn.ph.session import DesignInputs, resolve_designable, run_switch_design
@@ -236,3 +236,37 @@ def test_identical_states_are_fine_for_linked_equilibrium_when_the_ph_differs():
             make_inputs(),
             make_config(conditions=identical_conditions(7.0, 7.0), **options),
         )
+
+
+def _design_with_forbidden_energy(forbidden_stability):
+    """Only Ala and Gly may be designed; the other three tokens only differ in stability."""
+    stability = [0.0, 1.0] + [forbidden_stability] * 3
+    potency = [1.0, 0.0, 1.0, 1.0, 1.0]
+    inputs = DesignInputs(
+        tokens=torch.tensor([0, 4]),
+        table=TokenTable(["ALA", "GLY", "HIS", "HIS-P", "HIS-S"]),
+        chain_ids=["A", "B"],
+        res_ids=[1, 1],
+        parents=["ALA", "HIS"],
+        complex_scorer=FunctionSystem(
+            lambda t: stability[int(t[0])] + potency[int(t[0])], 5
+        ),
+        binder_scorer=FunctionSystem(lambda t: stability[int(t[0])], 5),
+        receptor_scorer=FunctionSystem(lambda t: 0, 5),
+        binder_positions=[0],
+        receptor_positions=[1],
+    )
+    config = SwitchDesignConfig.from_dict(
+        {
+            "conditions": {"on": {"states": {"B:1": "deprotonated"}}},
+            "terms": {"stability": {"weight": 0.6}, "potency": {"weight": 0.4}},
+            "designable": {"chains": ["A"]},
+            "block_size": 1,
+        }
+    )
+    run = run_switch_design(inputs, config)
+    return run.describe(run.result.records[0], "A")["canonical_sequence"]
+
+
+def test_energies_of_forbidden_tokens_do_not_change_the_design():
+    assert _design_with_forbidden_energy(0) == _design_with_forbidden_energy(10000)

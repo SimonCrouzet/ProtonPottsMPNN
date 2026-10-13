@@ -92,7 +92,10 @@ def run_search(
             f"The objective lacks terms {sorted(set(names) - set(objective.terms))}."
         )
     objective.freeze_scales(
-        tokens, _scale_blocks(designable, block_size, partner_rank), names
+        tokens,
+        _scale_blocks(designable, block_size, partner_rank),
+        names,
+        valid_mask=valid_mask,
     )
     pooled: Dict[tuple, DesignRecord] = {}
     for run_index, vector in enumerate(plan.weight_vectors):
