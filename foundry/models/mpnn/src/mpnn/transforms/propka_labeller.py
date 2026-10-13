@@ -32,12 +32,12 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _CAVEAT = (
-    "Protonation states come from PROPKA, not from EV6, which is what the checkpoint was trained on. "
-    "Against the experimental states of the neutron structures PROPKA is a weak labeller (ROC AUC of "
-    "its pKa 0.62 for His, 0.78 for Asp/Glu; see the README), so read the designs as an experiment."
+    "Starting states come from PROPKA, but the checkpoint was trained on EV6 labels. Against "
+    "experiment PROPKA labels are weak (neutron structures: ROC AUC 0.62 for His, 0.78 for "
+    "Asp/Glu); see the README, Protonation source."
 )
-_caveat_shown = False
 _WORDS = {"P": "protonated", "S": "neutral", "D": "deprotonated", "A": "ambiguous"}
+_caveat_shown = False
 
 # PROPKA reports a carboxylate group for every Asp, Glu and C terminus, so a side chain is told
 # apart by the atom its group is anchored on (the C terminus is anchored on "C").
@@ -158,7 +158,7 @@ class PropkaLabeller:
         unscored = [key for key in residues if key not in pka]
         if unscored:
             logger.warning(
-                "PROPKA gave no pKa for %d His/Asp/Glu residue(s), labelled ambiguous: %s",
+                "PROPKA gave no pKa for %d His/Asp/Glu residue(s), so they are labelled ambiguous. First: %s.",
                 len(unscored),
                 unscored[:5],
             )
@@ -176,15 +176,14 @@ class PropkaLabeller:
         by_type: Dict[str, Dict[str, int]] = {}
         for (_, _, name), token in tokens.items():
             counts = by_type.setdefault(name, {})
-            word = _WORDS[token[-1]]
-            counts[word] = counts.get(word, 0) + 1
-        summary = "; ".join(
-            f"{name}: " + ", ".join(f"{n} {word}" for word, n in sorted(counts.items()))
+            counts[token[-1]] = counts.get(token[-1], 0) + 1
+        summary = ", ".join(
+            f"{name} {n} {_WORDS[letter]}"
             for name, counts in sorted(by_type.items())
+            for letter, n in sorted(counts.items())
         )
         logger.info(
-            "PROPKA protonation states of chain(s) %s at pH %.2f (ambiguous within %.2f of the pKa): %s. "
-            "Residues named in a condition keep the state the condition gives them.",
+            "PROPKA states for chain(s) %s at pH %.2f, margin %.2f: %s.",
             ",".join(chains),
             self.ph,
             self.margin,

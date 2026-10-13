@@ -140,9 +140,10 @@ def test_the_labeller_logs_what_it_did_and_warns_once(
     ]  # not PROPKA's own
     warnings = [r.getMessage() for r in ours if r.levelno == logging.WARNING]
     assert (
-        len(warnings) == 1 and "EV6" in warnings[0] and "weak labeller" in warnings[0]
+        len(warnings) == 1
+        and "trained on EV6 labels" in warnings[0]
+        and "0.62" in warnings[0]
     )
     summaries = [r.getMessage() for r in ours if r.levelno == logging.INFO]
     assert len(summaries) == 2
-    assert "pH 7.40" in summaries[0] and "HIS: 3 neutral" in summaries[0]
-    assert "named in a condition" in summaries[0]
+    assert "pH 7.40" in summaries[0] and "HIS 3 neutral" in summaries[0]

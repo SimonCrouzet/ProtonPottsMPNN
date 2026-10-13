@@ -224,7 +224,10 @@ def linked_sites_from_spec(
             pka = float(pka_by_parent[parent])
             if pka_by_site:
                 logger.warning(
-                    "No per-site pKa for %s; using the %s value %.1f.", key, parent, pka
+                    "No per-site pKa for %s (%s), using the per-type value %.1f.",
+                    key,
+                    parent,
+                    pka,
                 )
         else:
             raise KeyError(f"No reference pKa for {parent} (site {key}).")

@@ -233,9 +233,9 @@ def _lookup(index: Mapping[SiteKey, int], text: str) -> int:
 
 
 PKAD_HIS_CAVEAT = (
-    "PROPKA did not beat the constant for His on PKAD (experimental pKa in monomeric proteins): "
-    "Pearson r 0.15, mean error 1.03 against 0.80. Set His sites by hand with "
-    "binding_options.pka_by_site if you trust another value (see the README)."
+    "PROPKA's reference pKa for His did not beat the per-type constant on PKAD "
+    "(Pearson r 0.15, mean error 1.03 against 0.80). Set His sites with "
+    "binding_options.pka_by_site if you prefer another value."
 )
 
 
@@ -269,12 +269,12 @@ def _reference_pka_by_site(
         parent = inputs.parents[site_index[key]]
         constant = DEFAULT_MODEL_PKA.get(parent)
         logger.info(
-            "Reference pKa of %s (%s): %.2f from %s (the per-type constant is %s)",
+            "Reference pKa of %s (%s): %.2f from %s; the per-type constant is %s.",
             key,
             parent,
             by_site[key],
             origin[key],
-            f"{constant:.1f}" if constant is not None else "not defined",
+            constant if constant is not None else "not defined",
         )
         from_propka_his |= parent == "HIS" and origin[key].startswith("PROPKA")
     if from_propka_his:
