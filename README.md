@@ -381,8 +381,8 @@ each one.
 | **`PHDesignCriteria`** | `interface_distance` (the interface placement cutoff, default 6 Å) |
 | **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`, never repeated); `to_rows` |
 | **robustness** | one device policy for GPU runs; returned designs always hold allowed tokens; strict condition keys; one seed source (`seed` overrides `base_seed`); `report_tokens` for legacy vocabularies |
-| **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), HBPLUS check that fails fast, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
-| **tests · CI** | `foundry/models/mpnn/tests/ph/` (run on synthetic Potts tables) and a ruff + tests workflow |
+| **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), `HBPLUS_PATH` resolved and checked before HBPLUS runs (see *Getting HBPLUS*), `atomworks` kept below 3, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
+| **tests · CI** | `foundry/models/mpnn/tests/ph/` (synthetic Potts tables, plus `test_real_structure.py` on the shipped PD-L1 complex when HBPLUS and a CCD mirror are available) and a ruff + tests workflow |
 
 **Where the original text above no longer holds**
 
