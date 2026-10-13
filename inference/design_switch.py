@@ -15,7 +15,7 @@ Glu from PROPKA at --label-ph instead of EV6, and --reference-pka propka (linked
 each named site's pKa from PROPKA on the free partners instead of one constant per residue type. Read the
 README section "Protonation source" for what each is worth before using them.
 
-Needs CCD_MIRROR_PATH (atomworks) and, unless --protonation propka, HBPLUS_PATH. Writes the ranked
+Needs HBPLUS_PATH unless --states propka. Writes the ranked
 designs as a table (``--out``) and prints the best ones.
 """
 import argparse

@@ -1,8 +1,8 @@
 """Switch design with PROPKA for the starting states and for the reference pKa, on the shipped PD-L1 complex.
 
 The PROPKA source labels residues from pKa values and skips the H-bond passes, so these tests
-run without HBPLUS (they remove it from the environment). They need atomworks, propka, a CCD
-mirror (``CCD_MIRROR_PATH``) and the packaged checkpoint; each test is skipped when one is missing.
+run without HBPLUS (they remove it from the environment). They need atomworks, propka and the
+packaged checkpoint; each test is skipped when one is missing.
 """
 
 import json
@@ -57,9 +57,6 @@ CONFIG = {
 
 
 def _missing_requirement():
-    mirror = os.environ.get("CCD_MIRROR_PATH")
-    if not mirror or not Path(mirror).is_dir():
-        return "CCD_MIRROR_PATH does not point at a CCD mirror"
     if not CHECKPOINT.is_file() or not (EXAMPLES / META["pdb"]).is_file():
         return "the packaged checkpoint or example structure is missing"
     return None

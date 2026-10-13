@@ -4,12 +4,12 @@ Everything else in ``tests/ph`` runs on synthetic Potts tables. These tests run 
 as a user would: ``inference/examples/pdl1_seed_binder.pdb`` (binder chain A, PD-L1 on chain
 B), the packaged v6 checkpoint, the structure pipeline and the protonation labeller.
 
-They need the full stack (atomworks, biotite), a local chemical component dictionary
-(``CCD_MIRROR_PATH``) and an HBPLUS executable (``HBPLUS_PATH``); each test is skipped when
-one is missing. They run on CPU, and one compares with CUDA when it is available.
+They need the full stack (atomworks, biotite) and an HBPLUS executable (``HBPLUS_PATH``);
+each test is skipped when one is missing. They run on CPU, and one compares with CUDA when
+it is available.
 
     cd foundry/models/mpnn
-    CCD_MIRROR_PATH=... HBPLUS_PATH=... PYTHONPATH=src \
+    HBPLUS_PATH=... PYTHONPATH=src \
         python -m pytest tests/ph/test_real_structure.py --confcutdir=tests/ph -v
 
 The assertions hold for any HBPLUS output, so they check how the pieces are wired together
@@ -70,10 +70,7 @@ CONFIG = {
 
 
 def _missing_requirement():
-    mirror = os.environ.get("CCD_MIRROR_PATH")
     hbplus = os.environ.get("HBPLUS_PATH")
-    if not mirror or not Path(mirror).is_dir():
-        return "CCD_MIRROR_PATH does not point at a CCD mirror"
     if not hbplus or not Path(hbplus).is_file():
         return "HBPLUS_PATH does not point at the hbplus executable"
     if not CHECKPOINT.is_file() or not (EXAMPLES / META["pdb"]).is_file():
