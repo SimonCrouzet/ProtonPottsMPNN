@@ -244,7 +244,10 @@ All values are in model units (`beta` is uncalibrated).
 **Several target states.** `engine.run_switch_design_ensemble(structures={"human": aa_h, "mouse": aa_m},
 binder_chain="A", config=config)` designs **one binder against several complexes**. The binder must be the
 same in every complex (same residues, same sequence) and the sites named in the conditions must exist in each,
-with the same numbering. Every term is evaluated in every state, then combined by `target_reduce`:
+with the same numbering. A binder residue that is not designed keeps the token of its own complex, so a
+fixed His labelled `HIS-P` in one structure and `HIS-S` in another is scored in each as labelled. A state in
+which a `near` site has no binder neighbours still counts; only an empty union over states is an error.
+Every term is evaluated in every state, then combined by `target_reduce`:
 
 | `target_reduce` | a term takes the value of … |
 |-----------------|-----------------------------|
@@ -266,7 +269,9 @@ name picks one token. Without it `site_report` stops and says the state is ambig
 
 Unknown config keys raise instead of being ignored, and so do unknown keys inside a condition (`states`, `ph`,
 `label` — a typo such as `state` is an error, not an empty assignment). A switch term whose `on` and `off`
-conditions impose identical states is refused, since it would be zero for every design. Designed positions
+conditions (its own, when it names them) impose identical states is refused, since it would be zero for every
+design; with `linked_equilibrium`, which sums over every imposed site, only a difference in pH counts.
+Weights must be finite. Designed positions
 take only non-titratable residues — and every returned design respects that, including any native token at a
 designable position — unless `allow_bare_titratable` lists a parent (bare His/Asp/Glu mean "state
 unspecified"). Tests:
