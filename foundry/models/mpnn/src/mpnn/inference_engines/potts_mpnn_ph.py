@@ -53,7 +53,7 @@ from mpnn.inference_engines.potts_mpnn import MPNNInferenceEngine
 from mpnn.metrics.sequence_recovery import _build_canonical_map
 from mpnn.model.layers.graph_embeddings import PottsProteinFeatures
 from mpnn.model.pottsmpnn import PottsMPNN
-from mpnn.ph.config import ProtonationSource, SwitchDesignConfig
+from mpnn.ph.config import ProtonationSources, SwitchDesignConfig
 from mpnn.ph.engine_adapter import (
     PottsScorerAdapter,
     knn_partner_rank,
@@ -828,8 +828,9 @@ def _binder_region_masks(proc_atom_array, token_aa, binder_chain, chainA_t, devi
 # ---------------------------------------------------------------------------
 
 def _needs_site_pka(config: SwitchDesignConfig) -> bool:
-    """Only the linked-equilibrium model uses reference pKa values, and PROPKA supplies them."""
-    return config.protonation.source == "propka" and config.binding_model == "linked_equilibrium"
+    """PROPKA's reference pKa values are only needed when they are asked for (which the config
+    only allows for the linked-equilibrium model, the one that uses a pKa)."""
+    return config.protonation.reference_pka == "propka"
 
 
 def _with_seed(config: SwitchDesignConfig, seed: Optional[int]) -> SwitchDesignConfig:
@@ -837,16 +838,34 @@ def _with_seed(config: SwitchDesignConfig, seed: Optional[int]) -> SwitchDesignC
     return config if seed is None else replace(config, base_seed=int(seed))
 
 
-def _as_protonation(protonation) -> ProtonationSource:
-    """A ProtonationSource from one, a plain dict, or None (the default: EV6)."""
-    if isinstance(protonation, ProtonationSource):
+def _as_protonation(protonation) -> ProtonationSources:
+    """ProtonationSources from one, a plain dict, or None (the defaults: EV6 states, constant pKa)."""
+    if isinstance(protonation, ProtonationSources):
         return protonation
-    return ProtonationSource.from_dict(protonation)
+    return ProtonationSources.from_dict(protonation)
 
 
-def _protonation_classifier(protonation: ProtonationSource):
-    """The labeller a ProtonationSource asks for: None keeps the vocabulary's own (EV6)."""
-    if protonation.source == "ev6":
+def _check_propka_available(config: SwitchDesignConfig) -> None:
+    """Both PROPKA settings need it; fail now, before any structure is read."""
+    if config.protonation.states == "propka" or _needs_site_pka(config):
+        from mpnn.transforms.propka_labeller import require_propka
+
+        require_propka()
+
+
+def _describe_protonation(protonation: ProtonationSources) -> str:
+    states = (
+        f"PROPKA at pH {protonation.ph:g} (margin {protonation.margin:g})"
+        if protonation.states == "propka"
+        else "EV6"
+    )
+    pka = "PROPKA on the free partners" if protonation.reference_pka == "propka" else "per-type constants"
+    return f"starting states from {states}; linked_equilibrium reference pKa from {pka}"
+
+
+def _protonation_classifier(protonation: ProtonationSources):
+    """The labeller the starting states ask for: None keeps the vocabulary's own (EV6)."""
+    if protonation.states == "ev6":
         return None
     from mpnn.transforms.propka_labeller import PropkaLabeller, require_propka
 
@@ -1157,6 +1176,8 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         if not isinstance(config, SwitchDesignConfig):
             config = SwitchDesignConfig.from_dict(config)
         config = _with_seed(config, seed)
+        _check_propka_available(config)
+        logger.info("Protonation: %s", _describe_protonation(config.protonation))
         ctx = self._build_context(
             atom_array, binder_chain, base_seed=config.base_seed, protonation=config.protonation
         )
@@ -1185,6 +1206,8 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         if not isinstance(config, SwitchDesignConfig):
             config = SwitchDesignConfig.from_dict(config)
         config = _with_seed(config, seed)
+        _check_propka_available(config)
+        logger.info("Protonation: %s", _describe_protonation(config.protonation))
         inputs = {}
         for name, atom_array in structures.items():
             ctx = self._build_context(
@@ -1206,7 +1229,12 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             raise RuntimeError("The context carries no processed atom array.")
         on_binder = np.array([str(c) == binder_chain for c in atoms.chain_id])
         site_pka: Dict[SiteKey, float] = {}
-        for partner in (atoms[on_binder], atoms[~on_binder]):
+        for role, partner in (("binder", atoms[on_binder]), ("receptor", atoms[~on_binder])):
+            logger.info(
+                "Running PROPKA on the free %s (%d atoms) for the reference pKa of linked_equilibrium",
+                role,
+                len(partner),
+            )
             for (chain, res_id), value in propka_site_pka(partner).items():
                 site_pka[SiteKey(chain, res_id)] = value
         return site_pka
@@ -1296,8 +1324,9 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
     ) -> PHDesignSet:
         """Featurise + forward ONCE, then run each criteria against the shared Potts tables.
 
-        ``protonation`` (a ``ProtonationSource`` or its dict) chooses where the input structure's
-        protonation states come from: EV6 by default, or PROPKA at a given pH.
+        ``protonation`` (a ``ProtonationSources`` or its dict) chooses where the input structure's
+        protonation states come from: EV6 by default, or ``{"states": "propka", "ph": ...}``.
+        Its ``reference_pka`` belongs to ``linked_equilibrium`` and is refused here.
 
         All criteria must share this engine's checkpoint/vocab; they may differ in method and
         knobs (the sweep). Returns a ``PHDesignSet`` (deduped, lowest energy first).
@@ -1311,6 +1340,13 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         this backbone's featurised tables read-only (COW). CPU only; results are identical to the
         serial path (each design re-seeds its own RNG), just produced out of order then re-sorted.
         """
+        protonation = _as_protonation(protonation)
+        if protonation.reference_pka != "constant":
+            raise ValueError(
+                "protonation.reference_pka only applies to run_switch_design with the "
+                "linked_equilibrium binding model; run_ph_redesign has no pKa to set."
+            )
+        logger.info("Protonation: %s", _describe_protonation(protonation))
         ctx = self._build_context(atom_array, binder_chain, base_seed=seed, protonation=protonation)
         ctx.external_initial_sequences = list(initial_sequences) if initial_sequences else []
         # Score the ORIGINAL seeds (as supplied, no RES-P introduced) with the same featurised

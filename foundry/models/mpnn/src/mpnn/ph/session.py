@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from mpnn.ph.binding import (
+    DEFAULT_MODEL_PKA,
     BindingModel,
     EnergyScorer,
     SystemView,
@@ -65,7 +66,7 @@ class DesignInputs:
     # the model's contact table E_idx [L, K] (slot 0 = the residue itself); needed by designable.near
     neighbour_index: Optional[np.ndarray] = None
     # reference pKa of each titratable site in the free partners (PROPKA, filled by the engine);
-    # used by linked_equilibrium when config.protonation.source == "propka"
+    # used by linked_equilibrium when config.protonation.reference_pka == "propka"
     site_pka: Optional[Mapping[SiteKey, float]] = None
 
 
@@ -231,23 +232,53 @@ def _lookup(index: Mapping[SiteKey, int], text: str) -> int:
     return index[key]
 
 
+PKAD_HIS_CAVEAT = (
+    "PROPKA did not beat the constant for His on PKAD (experimental pKa in monomeric proteins): "
+    "Pearson r 0.15, mean error 1.03 against 0.80. Set His sites by hand with "
+    "binding_options.pka_by_site if you trust another value (see the README)."
+)
+
+
 def _reference_pka_by_site(
     config: SwitchDesignConfig,
     inputs: DesignInputs,
     explicit: Optional[Mapping[str, float]],
 ) -> Optional[Dict[SiteKey, float]]:
-    """Per-site reference pKa: PROPKA's when it is the protonation source, then the user's own
-    ``binding_options.pka_by_site`` on top (``{"A:32": 5.9}``)."""
+    """Per-site reference pKa for linked_equilibrium: PROPKA's when ``protonation.reference_pka`` is
+    ``"propka"``, then the user's own ``binding_options.pka_by_site`` (``{"A:32": 5.9}``) on top.
+    Logs where each value of a site the conditions name comes from."""
     by_site: Dict[SiteKey, float] = {}
-    if config.protonation.source == "propka":
+    origin: Dict[SiteKey, str] = {}
+    if config.protonation.reference_pka == "propka":
         if inputs.site_pka is None:
             raise ValueError(
-                "The 'propka' protonation source needs the free partners' PROPKA pKa values "
-                "(DesignInputs.site_pka) for linked_equilibrium; the engine computes them."
+                "protonation.reference_pka 'propka' needs the free partners' PROPKA pKa values "
+                "(DesignInputs.site_pka); the engine computes them."
             )
         by_site.update(inputs.site_pka)
+        origin.update({key: "PROPKA on the free partner" for key in inputs.site_pka})
     for text, value in (explicit or {}).items():
-        by_site[SiteKey.parse(text)] = float(value)
+        key = SiteKey.parse(text)
+        by_site[key] = float(value)
+        origin[key] = "binding_options.pka_by_site"
+    site_index = site_index_from_arrays(inputs.chain_ids, inputs.res_ids)
+    from_propka_his = False
+    for key in sorted(config.spec.sites()):
+        if key not in by_site or key not in site_index:
+            continue
+        parent = inputs.parents[site_index[key]]
+        constant = DEFAULT_MODEL_PKA.get(parent)
+        logger.info(
+            "Reference pKa of %s (%s): %.2f from %s (the per-type constant is %s)",
+            key,
+            parent,
+            by_site[key],
+            origin[key],
+            f"{constant:.1f}" if constant is not None else "not defined",
+        )
+        from_propka_his |= parent == "HIS" and origin[key].startswith("PROPKA")
+    if from_propka_his:
+        logger.warning(PKAD_HIS_CAVEAT)
     return by_site or None
 
 

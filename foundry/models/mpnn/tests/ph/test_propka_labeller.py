@@ -1,6 +1,7 @@
 """PROPKA as a source of protonation labels (needs atomworks and propka for most tests)."""
 
 import importlib.util
+import logging
 import math
 import sys
 from pathlib import Path
@@ -123,3 +124,25 @@ def test_the_labeller_replaces_the_vocabulary_classifier(atoms):
     his = (out.chain_id == "A") & (out.res_id == 32)
     assert set(out.protonation_label[his]) == {"HIS-P"}
     assert "hbond_records" in seen  # the vocabulary's call is unchanged
+
+
+def test_the_labeller_logs_what_it_did_and_warns_once(
+    labeller_module, atoms, caplog, monkeypatch
+):
+    require("propka")
+    monkeypatch.setattr(labeller_module, "_caveat_shown", False)
+    labeller = labeller_module.PropkaLabeller(7.4)
+    with caplog.at_level(logging.INFO, logger=labeller_module.logger.name):
+        labeller(atoms)
+        labeller(atoms)
+    ours = [
+        r for r in caplog.records if r.name == labeller_module.logger.name
+    ]  # not PROPKA's own
+    warnings = [r.getMessage() for r in ours if r.levelno == logging.WARNING]
+    assert (
+        len(warnings) == 1 and "EV6" in warnings[0] and "weak labeller" in warnings[0]
+    )
+    summaries = [r.getMessage() for r in ours if r.levelno == logging.INFO]
+    assert len(summaries) == 2
+    assert "pH 7.40" in summaries[0] and "HIS: 3 neutral" in summaries[0]
+    assert "named in a condition" in summaries[0]

@@ -8,13 +8,19 @@ A:32 and the target Asp B:105 are deprotonated at pH 7.4 (binding on) and proton
 (binding off). Swap the states or the pH values to design the opposite switch.
 
     python inference/design_switch.py
-    python inference/design_switch.py --protonation propka --binding-model linked_equilibrium
+    python inference/design_switch.py --binding-model linked_equilibrium --reference-pka propka
+
+PROPKA is opt-in, for two separate things: --states propka labels the structure's other His, Asp and
+Glu from PROPKA at --label-ph instead of EV6, and --reference-pka propka (linked_equilibrium only) takes
+each named site's pKa from PROPKA on the free partners instead of one constant per residue type. Read the
+README section "Protonation source" for what each is worth before using them.
 
 Needs CCD_MIRROR_PATH (atomworks) and, unless --protonation propka, HBPLUS_PATH. Writes the ranked
 designs as a table (``--out``) and prints the best ones.
 """
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -44,10 +50,13 @@ def parse_args(argv=None):
     p.add_argument("--off-state", choices=["protonated", "deprotonated"], default="protonated")
     p.add_argument("--binding-model", default="state_binding",
                    choices=["state_binding", "complex_gap", "linked_equilibrium"])
-    p.add_argument("--protonation", default="ev6", choices=["ev6", "propka"],
-                   help="where the other residues' states (and linked_equilibrium's pKa) come from")
-    p.add_argument("--label-ph", type=float, help="pH of the PROPKA labels (default: --ph-on)")
-    p.add_argument("--label-margin", type=float, default=0.5)
+    p.add_argument("--states", default="ev6", choices=["ev6", "propka"],
+                   help="where the starting states of residues no condition names come from")
+    p.add_argument("--label-ph", type=float, help="pH of the PROPKA states (default: --ph-on)")
+    p.add_argument("--label-margin", type=float, default=0.5,
+                   help="PROPKA states within this many pH units of the pKa are ambiguous")
+    p.add_argument("--reference-pka", default="constant", choices=["constant", "propka"],
+                   help="pKa of each named site in linked_equilibrium: one constant per residue type, or PROPKA")
     p.add_argument("--weights", type=float, nargs=3, default=[0.3, 0.3, 0.4],
                    metavar=("STABILITY", "POTENCY", "SWITCH"))
     p.add_argument("--near-k", type=int, default=16, help="binder neighbours of the target site that may change")
@@ -80,14 +89,21 @@ def build_config(args):
         "search": "single",
         "base_seed": args.seed,
     }
-    if args.protonation == "propka":
-        config["protonation"] = {"source": "propka", "ph": args.label_ph if args.label_ph is not None else args.ph_on,
-                                 "margin": args.label_margin}
+    protonation = {}
+    if args.states == "propka":
+        protonation |= {"states": "propka", "ph": args.label_ph if args.label_ph is not None else args.ph_on,
+                        "margin": args.label_margin}
+    if args.reference_pka == "propka":
+        protonation["reference_pka"] = "propka"
+    if protonation:
+        config["protonation"] = protonation
     return config
 
 
 def main(argv=None):
     args = parse_args(argv)
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("mpnn").setLevel(logging.INFO)  # which protonation source is used, and where each pKa comes from
     engine = PottsMPNNPHEngine(checkpoint_path=str(CKPT), extended_vocab="v6", device=args.device,
                                out_directory=None, write_fasta=False, write_structures=False)
     atom_array = PDBFile.read(str(args.pdb)).get_structure(model=1)
