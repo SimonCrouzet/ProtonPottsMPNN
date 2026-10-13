@@ -81,7 +81,7 @@ the labeller and the fold scoring.
    ends with `181 hydrogen bonds found.`
 
 A missing, mistyped or non-executable `HBPLUS_PATH` stops the run with a message that says which of these it is.
-With the PROPKA protonation source (*Switch design*, above) the design engine does not run HBPLUS at all.
+With `protonation.states` set to `propka` (*Switch design*, above) the design engine does not run HBPLUS at all.
 
 ---
 
@@ -246,7 +246,8 @@ run.site_report(best)                      # per condition and site: complex vs 
 ```
 
 From the command line, `python inference/design_switch.py` runs the example above on the shipped PD-L1 complex
-(`--help` lists the flags: the two sites, the pH values and states, the binding model, `--protonation propka`)
+(`--help` lists the flags: the two sites, the pH values and states, the binding model, `--states propka`,
+`--reference-pka propka`)
 and writes the ranked designs to `inference/outputs/switch_designs.tsv`.
 
 **Redesign around a residue.** `designable.near` keeps only the binder positions the model couples to the
@@ -291,28 +292,38 @@ the same designs.
 `"report_tokens": {"HIS": {"deprotonated": ["HID", "HIE"]}}` — a list is averaged (as `dep_map` did), a single
 name picks one token. Without it `site_report` stops and says the state is ambiguous.
 
-**Protonation source.** The input structure's His, Asp and Glu get their starting states from EV6, the
-geometric classifier the checkpoint was trained with: one call per residue, independent of pH. Setting
-`"protonation": {"source": "propka", "ph": 7.4}` in the config (or `protonation=` on `run_ph_redesign`) uses
-PROPKA instead:
+**Protonation source (PROPKA, opt-in).** EV6 and one pKa constant per residue type are the defaults. Two
+independent settings under `"protonation"` in the config let PROPKA take over two different jobs; neither is on
+unless you ask, and the engine logs which source it uses.
 
-| | `ev6` (default) | `propka` |
+| setting | default | `"propka"` |
 |---|---|---|
-| starting state of a residue no condition names | the EV6 call | protonated if pKa > pH + `margin`, neutral if pKa < pH − `margin`, else ambiguous (`-A`); `margin` defaults to 0.5 |
-| reference pKa of a site in `linked_equilibrium` | one constant per residue type (Asp 3.7, Glu 4.3, His 6.5) | PROPKA's value for that site, from the free binder and the free receptor |
-| HBPLUS | needed | not needed: the H-bond passes only feed EV6, so they are skipped |
+| `states` | `ev6`: the geometric classifier the checkpoint was trained with, one call per residue, independent of pH | the starting state of every His, Asp and Glu that no condition names comes from PROPKA's pKa at the pH `ph` (required): protonated if pKa > pH + `margin`, neutral if pKa < pH − `margin`, else ambiguous (`-A`); `margin` defaults to 0.5. HBPLUS is not needed: the H-bond passes only feed EV6, so they are skipped |
+| `reference_pka` | `constant`: one value per residue type (Asp 3.7, Glu 4.3, His 6.5) | `linked_equilibrium` only: the pKa of each site it sums over comes from PROPKA run on the free binder and the free receptor. `binding_options.pka_by_site` (`{"A:32": 5.9}`) sets single sites by hand and wins |
 
-The free partners give the reference pKa because the shift that binding brings is already in the Potts
-energies; PROPKA on the complex would count it twice. For the binder His of the PD-L1 example, PROPKA gives
-5.5 on the free binder and 3.4 inside the complex. `binding_options.pka_by_site` (`{"A:32": 5.9}`) sets single
-sites by hand and wins over PROPKA. The two uses are not equally good, and `benchmarks/propka_vs_experiment.py`
-scores them against experiment. As a reference pKa, PROPKA beats the per-type constant for Asp (PKAD, 221
-residues: Pearson r 0.81, mean error 0.71 against 1.04) and slightly for Glu (254: r 0.71, 0.65 against 0.70),
-but not for His (171: r 0.15, 1.03 against 0.80), so consider setting His sites with `pka_by_site`. As a source
-of starting states it is weak: against the experimental states of 217 neutron structures, the ROC AUC of its pKa
-is 0.62 for His and 0.78 for Asp/Glu; EV6, which was trained on those structures, does far better. The
-checkpoint was trained on EV6 labels, so read PROPKA labels as an experiment. PROPKA is an optional install
-(`uv pip install propka`); without it the `propka` source stops with that instruction.
+For example `"protonation": {"states": "propka", "ph": 7.4, "reference_pka": "propka"}`; `reference_pka` needs
+`"binding_model": "linked_equilibrium"` and the config refuses it with any other model. `run_ph_redesign(...,
+protonation={"states": "propka", "ph": 7.4})` takes `states` only. Residues named in a condition keep the state the
+condition gives them whatever `states` is. PROPKA is an optional install (`uv pip install propka`); without it
+the run stops at once with that instruction. `logging.getLogger("mpnn").setLevel(logging.INFO)` shows the logs
+(`inference/design_switch.py` does): the source in use, a count of the PROPKA states, and for each named site
+the pKa and where it came from.
+
+Caveats, each measured by `benchmarks/propka_vs_experiment.py`:
+
+- **`states`.** The checkpoint was trained on EV6 labels, and PROPKA is a weak labeller against experiment. On
+  217 neutron structures (8071 residues) the ROC AUC of its pKa is 0.62 for His and 0.78 for Asp/Glu, and at pH 7
+  its His labels are no better than calling every His neutral. EV6 does far better, but it was trained on those
+  structures, so the comparison is not fair. What the setting adds is the dependence on pH. A warning says this
+  once per run.
+- **`reference_pka`.** PROPKA beats the constant for Asp (PKAD, 221 residues: Pearson r 0.81, mean error 0.71
+  against 1.04), only slightly for Glu (254: r 0.71, 0.65 against 0.70), and not for His (171: r 0.15, 1.03
+  against 0.80), the residue of most pH switches; a warning appears whenever PROPKA's His values enter the model.
+  The free partners are used because the pKa shift on binding is already in the Potts energies, and PROPKA on the
+  complex would count it twice (the example binder His A:32: 5.5 free, 3.4 in the complex). The Potts energies are
+  not calibrated (`beta`), so apparent pKa shifts are in model units.
+- **Both.** PROPKA reads the structure as given and drops ligands, metals and waters. Its values are only as good
+  as the backbone and side chains it is shown, which matters for designed or predicted binders.
 
 Unknown config keys raise instead of being ignored, and so do unknown keys inside a condition (`states`, `ph`,
 `label` — a typo such as `state` is an error, not an empty assignment). A switch term whose `on` and `off`
@@ -412,7 +423,7 @@ each one.
 | **robustness** | one device policy for GPU runs; returned designs always hold allowed tokens; strict condition keys; one seed source (`seed` overrides `base_seed`); `report_tokens` for legacy vocabularies |
 | **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), `HBPLUS_PATH` resolved and checked before HBPLUS runs (see *Getting HBPLUS*), `atomworks` kept below 3, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
 | **inference scripts** | `design_switch.py` runs switch design from the command line; `design_ph.py` designs on the CPU and keeps the GPU for the RF3 refold; scoring a refolded design no longer fails when a GPU is visible |
-| **protonation source** | `protonation: {source: "propka", ph, margin}` labels the input structure from PROPKA instead of EV6 and gives `linked_equilibrium` per-site reference pKa values (`pka_by_site` sets single sites); optional install, no HBPLUS needed |
+| **PROPKA, opt-in** | `protonation: {states, reference_pka, ph, margin}`: `states: "propka"` labels the input structure from PROPKA instead of EV6 (no HBPLUS needed), `reference_pka: "propka"` gives `linked_equilibrium` per-site pKa values from the free partners (`pka_by_site` sets single sites); both off by default, optional install, logged, with measured caveats |
 | **tests · CI** | `foundry/models/mpnn/tests/ph/` (synthetic Potts tables, plus `test_real_structure.py` on the shipped PD-L1 complex when HBPLUS and a CCD mirror are available) and a ruff + tests workflow |
 
 **Where the original text above no longer holds**
@@ -421,7 +432,7 @@ each one.
 |--------------------|-----|
 | Install: `install.sh` runs `uv venv --clear`; kernel `ProtonPottsMPNN (.venv)` (also in example 2) | it **refuses to overwrite** an existing venv unless given `--clear`; `VENV_DIR` sets where it goes; the kernel is `ProtonPottsMPNN (venv)` |
 | HBPLUS is **not** needed to run the design engine (and the install table) | it **is**: `prepare_potts_input` runs HBPLUS on every structure it featurises. Only `mpnn.ph` itself needs just torch + numpy |
-| Install: the extras include propka | propka is optional now (`uv pip install propka`); only the PROPKA protonation source and the training-time pKa annotation use it |
+| Install: the extras include propka | propka is optional now (`uv pip install propka`); only the two PROPKA settings and the training-time pKa annotation use it |
 | example 2 snippet | it needs `seed_source="native"` (the snippet above now has it): the default `"inverse"` needs `initial_sequences` |
 | `foundry/` is "a full verbatim copy" (also under License) | this fork edits the `mpnn` package inside it; the rest is unchanged |
 | pKa benchmark: `… eval_pkad --checkpoints …` with `PROTON_ROOT` | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6` — there is no `--checkpoints` flag, `--extended_vocab` defaults to `v4`, and the default paths point at the original cluster |
