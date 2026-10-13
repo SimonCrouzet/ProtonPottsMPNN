@@ -19,6 +19,7 @@ shap>=0.52            # only for the labeller SHAP/analysis scripts (not require
 
 # --- notebook / plots (inference/design_ph.ipynb) ---
 matplotlib>=3.8
+seaborn>=0.13        # mpnn.scripts.eval_pkad and the benchmark plots import it
 nbconvert>=7
 nbformat>=5
 jupyterlab>=4
