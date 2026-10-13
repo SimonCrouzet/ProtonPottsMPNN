@@ -292,8 +292,14 @@ def calculate_hbonds(
             "HBPLUS_PATH environment variable not set. "
             "Please set it to the path of the hbplus executable in order to calculate hydrogen bonds."
         )
+
+    hbplus_exe = os.path.abspath(hbplus_exe)
     if not os.path.isfile(hbplus_exe):
-        raise FileNotFoundError(f"HBPLUS_PATH points to a missing file: {hbplus_exe}")
+        raise ValueError(
+            f"HBPLUS_PATH is set to {hbplus_exe!r}, which is not a file. "
+            "Please point it at the hbplus executable."
+        )
+
 
     # save_atomarray_to_pdb remaps chain_id based on chain_iid (needed to write
     # a valid PDB file for hbplus), but we must not let that mutation leak into
