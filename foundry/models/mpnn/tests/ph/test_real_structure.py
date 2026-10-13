@@ -18,9 +18,12 @@ The assertions hold for any HBPLUS output, so they check how the pieces are wire
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -120,6 +123,25 @@ def run(engine, atoms):
     return engine.run_switch_design(
         atom_array=atoms, binder_chain=BINDER, config=CONFIG, seed=0
     )
+
+
+def run_example_script(tmp_path, *flags):
+    """inference/design_switch.py as a user runs it: its table and what it printed."""
+    out = tmp_path / "designs.tsv"
+    done = subprocess.run(
+        [
+            sys.executable,
+            str(REPO / "inference" / "design_switch.py"),
+            "--out",
+            str(out),
+            *flags,
+        ],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert done.returncode == 0, done.stderr[-1500:]
+    return pd.read_csv(out, sep="\t"), done.stdout
 
 
 def sequences(design_run):
@@ -252,6 +274,18 @@ def test_the_original_redesign_returns_the_same_designs_for_any_n_jobs(engine, a
 
     serial = designs(1)
     assert serial and designs(2) == serial
+
+
+def test_the_example_script_designs_the_shipped_complex(tmp_path):
+    table, printed = run_example_script(tmp_path, "--seed", "0")
+    assert len(table) >= 1 and "best design" in printed
+    assert {
+        "rank",
+        "canonical_sequence",
+        "term_stability",
+        "term_potency",
+        "term_switch",
+    } <= set(table.columns)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")

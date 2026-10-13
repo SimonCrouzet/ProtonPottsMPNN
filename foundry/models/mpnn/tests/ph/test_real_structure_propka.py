@@ -7,9 +7,12 @@ mirror (``CCD_MIRROR_PATH``) and the packaged checkpoint; each test is skipped w
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 pytest.importorskip("atomworks")
@@ -88,6 +91,25 @@ def engine():
         write_fasta=False,
         write_structures=False,
     )
+
+
+def run_example_script(tmp_path, *flags):
+    """inference/design_switch.py as a user runs it: its table and what it printed."""
+    out = tmp_path / "designs.tsv"
+    done = subprocess.run(
+        [
+            sys.executable,
+            str(REPO / "inference" / "design_switch.py"),
+            "--out",
+            str(out),
+            *flags,
+        ],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert done.returncode == 0, done.stderr[-1500:]
+    return pd.read_csv(out, sep="\t"), done.stdout
 
 
 def labelled(ctx, tokens_by_residue):
@@ -178,3 +200,17 @@ def test_run_ph_redesign_takes_the_propka_source_too(engine, atoms):
         protonation=PROPKA,
     )
     assert len(found) >= 1
+
+
+def test_the_example_script_takes_the_propka_source(tmp_path):
+    table, printed = run_example_script(
+        tmp_path, "--protonation", "propka", "--binding-model", "linked_equilibrium"
+    )
+    assert len(table) >= 1 and "best design" in printed
+    assert {
+        "rank",
+        "canonical_sequence",
+        "term_stability",
+        "term_potency",
+        "term_switch",
+    } <= set(table.columns)
