@@ -53,9 +53,9 @@ def crowding_distance(points: np.ndarray) -> np.ndarray:
     for k in range(m):
         order = np.argsort(points[:, k], kind="stable")
         span = points[order[-1], k] - points[order[0], k]
-        distance[order[0]] = distance[order[-1]] = np.inf
-        if span == 0:
+        if span == 0:  # a constant objective has no extremes to protect
             continue
+        distance[order[0]] = distance[order[-1]] = np.inf
         gaps = (points[order[2:], k] - points[order[:-2], k]) / span
         distance[order[1:-1]] += gaps
     return distance

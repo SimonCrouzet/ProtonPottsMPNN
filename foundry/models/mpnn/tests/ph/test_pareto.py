@@ -103,3 +103,12 @@ def test_hypervolume_matches_inclusion_exclusion(n_obj, seed):
     assert hypervolume(pts, ref) == pytest.approx(
         box_union_by_inclusion_exclusion(pts, ref)
     )
+
+
+def test_a_constant_objective_does_not_decide_which_points_are_extremes():
+    points = np.array([[1.0, 2.0], [0.0, 3.0], [3.0, 0.0], [2.0, 1.0]])
+    with_constant = np.column_stack([points, np.zeros(len(points))])
+    assert select_by_crowding(with_constant, 2).tolist() == (
+        select_by_crowding(points, 2).tolist()
+    )
+    assert np.isfinite(crowding_distance(with_constant)).sum() == 2
