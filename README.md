@@ -275,6 +275,11 @@ unspecified"). Tests:
 cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q
 ```
 
+Most of these run on synthetic Potts tables. `tests/ph/test_real_structure.py` runs the engine on
+`inference/examples/pdl1_seed_binder.pdb` with the packaged checkpoint (CPU, and CUDA when present); it is
+skipped unless atomworks, `CCD_MIRROR_PATH` (a local CCD mirror: `atomworks ccd sync <dir>`) and `HBPLUS_PATH`
+are set.
+
 ---
 
 ## Layout
