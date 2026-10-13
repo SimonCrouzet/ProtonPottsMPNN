@@ -86,7 +86,9 @@ def test_run_switch_design_accepts_the_pareto_option(wired):
 def test_ensemble_design_builds_inputs_for_each_structure(engine):
     contexts = {"human": make_ctx(engine), "mouse": make_ctx(engine)}
     runner = bare_engine(engine, contexts["human"])
-    runner._build_context = lambda atom_array, chain, base_seed=0: contexts[atom_array]
+    runner._build_context = (
+        lambda atom_array, chain, base_seed=0, protonation=None: contexts[atom_array]
+    )
     run = runner.run_switch_design_ensemble(
         structures={"human": "human", "mouse": "mouse"},
         binder_chain="A",
@@ -108,7 +110,7 @@ def test_the_seed_argument_overrides_the_configs_base_seed(
     ctx = make_ctx(engine)
     runner = bare_engine(engine, ctx)
     context_seeds, search_configs = [], []
-    runner._build_context = lambda atom_array, chain, base_seed=0: (
+    runner._build_context = lambda atom_array, chain, base_seed=0, protonation=None: (
         context_seeds.append(base_seed) or ctx
     )
 

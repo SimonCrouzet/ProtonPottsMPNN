@@ -53,7 +53,7 @@ from mpnn.inference_engines.potts_mpnn import MPNNInferenceEngine
 from mpnn.metrics.sequence_recovery import _build_canonical_map
 from mpnn.model.layers.graph_embeddings import PottsProteinFeatures
 from mpnn.model.pottsmpnn import PottsMPNN
-from mpnn.ph.config import SwitchDesignConfig
+from mpnn.ph.config import ProtonationSource, SwitchDesignConfig
 from mpnn.ph.engine_adapter import (
     PottsScorerAdapter,
     knn_partner_rank,
@@ -63,7 +63,7 @@ from mpnn.ph.engine_adapter import (
 from mpnn.ph.session import DesignInputs, EnsembleRun, SwitchDesignRun
 from mpnn.ph.session import run_switch_design as _run_switch_design
 from mpnn.ph.session import run_switch_design_ensemble as _run_switch_design_ensemble
-from mpnn.ph.states import site_index_from_arrays
+from mpnn.ph.states import SiteKey, site_index_from_arrays
 from mpnn.ph.vocab_meta import TokenTable
 from mpnn.potts_inference import prepare_potts_input
 
@@ -827,9 +827,30 @@ def _binder_region_masks(proc_atom_array, token_aa, binder_chain, chainA_t, devi
 # Engine
 # ---------------------------------------------------------------------------
 
+def _needs_site_pka(config: SwitchDesignConfig) -> bool:
+    """Only the linked-equilibrium model uses reference pKa values, and PROPKA supplies them."""
+    return config.protonation.source == "propka" and config.binding_model == "linked_equilibrium"
+
+
 def _with_seed(config: SwitchDesignConfig, seed: Optional[int]) -> SwitchDesignConfig:
     """One seed for a switch-design run: ``seed``, when given, overrides ``config.base_seed``."""
     return config if seed is None else replace(config, base_seed=int(seed))
+
+
+def _as_protonation(protonation) -> ProtonationSource:
+    """A ProtonationSource from one, a plain dict, or None (the default: EV6)."""
+    if isinstance(protonation, ProtonationSource):
+        return protonation
+    return ProtonationSource.from_dict(protonation)
+
+
+def _protonation_classifier(protonation: ProtonationSource):
+    """The labeller a ProtonationSource asks for: None keeps the vocabulary's own (EV6)."""
+    if protonation.source == "ev6":
+        return None
+    from mpnn.transforms.propka_labeller import PropkaLabeller
+
+    return PropkaLabeller(ph=protonation.ph, margin=protonation.margin)
 
 
 def _to_device(obj, device):
@@ -1135,8 +1156,11 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         if not isinstance(config, SwitchDesignConfig):
             config = SwitchDesignConfig.from_dict(config)
         config = _with_seed(config, seed)
-        ctx = self._build_context(atom_array, binder_chain, base_seed=config.base_seed)
-        return _run_switch_design(self._design_inputs(ctx, binder_chain), config)
+        ctx = self._build_context(
+            atom_array, binder_chain, base_seed=config.base_seed, protonation=config.protonation
+        )
+        inputs = self._design_inputs(ctx, binder_chain, with_site_pka=_needs_site_pka(config))
+        return _run_switch_design(inputs, config)
 
     @torch.no_grad()
     def run_switch_design_ensemble(
@@ -1163,12 +1187,32 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         inputs = {}
         for name, atom_array in structures.items():
             ctx = self._build_context(
-                atom_array, binder_chain, base_seed=config.base_seed
+                atom_array, binder_chain, base_seed=config.base_seed, protonation=config.protonation
             )
-            inputs[name] = self._design_inputs(ctx, binder_chain)
+            inputs[name] = self._design_inputs(
+                ctx, binder_chain, with_site_pka=_needs_site_pka(config)
+            )
         return _run_switch_design_ensemble(inputs, config)
 
-    def _design_inputs(self, ctx: "_PHContext", binder_chain: str) -> DesignInputs:
+    def _free_site_pka(self, ctx: "_PHContext", binder_chain: str) -> Dict[SiteKey, float]:
+        """PROPKA's reference pKa of every His, Asp and Glu, run on the free binder and on the
+        free receptor. The pKa shift that binding brings is not in these numbers: it comes from
+        the Potts energies of the linked-equilibrium model."""
+        from mpnn.transforms.propka_labeller import propka_site_pka
+
+        atoms = ctx.proc_atom_array
+        if atoms is None:
+            raise RuntimeError("The context carries no processed atom array.")
+        on_binder = np.array([str(c) == binder_chain for c in atoms.chain_id])
+        site_pka: Dict[SiteKey, float] = {}
+        for partner in (atoms[on_binder], atoms[~on_binder]):
+            for (chain, res_id), value in propka_site_pka(partner).items():
+                site_pka[SiteKey(chain, res_id)] = value
+        return site_pka
+
+    def _design_inputs(
+        self, ctx: "_PHContext", binder_chain: str, *, with_site_pka: bool = False
+    ) -> DesignInputs:
         """Describe the featurised complex to ``mpnn.ph``: tokens, residues, 3 scorers."""
         names = [str(ctx.encoding.idx_to_token[i]) for i in range(ctx.V)]
         chain_ids = [str(c) for c in ctx.token_aa.chain_id]
@@ -1201,6 +1245,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             receptor_positions=receptor_positions,
             partner_rank=knn_partner_rank(ctx.eidx_np),
             neighbour_index=ctx.eidx_np,
+            site_pka=self._free_site_pka(ctx, binder_chain) if with_site_pka else None,
         )
 
     def _isolated_scorer(self, ctx: "_PHContext", chains, site_index):
@@ -1219,7 +1264,10 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             raise ValueError(f"No atoms for chains {list(chains)}.")
         vocab = getattr(self, "_vocab_name", None) or "v4"
         batch = prepare_potts_input(
-            atoms[keep], structure_noise=0.0, extended_vocab=vocab
+            atoms[keep],
+            structure_noise=0.0,
+            extended_vocab=vocab,
+            protonation_classifier=ctx.protonation_classifier,
         )
         network_input = _to_device(batch["network_input"], self.device)
         out = run_forward_compat(self.model, network_input)
@@ -1243,8 +1291,12 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         seed: int = 0,
         initial_sequences: Optional[Sequence[str]] = None,
         n_jobs: int = 1,
+        protonation=None,
     ) -> PHDesignSet:
         """Featurise + forward ONCE, then run each criteria against the shared Potts tables.
+
+        ``protonation`` (a ``ProtonationSource`` or its dict) chooses where the input structure's
+        protonation states come from: EV6 by default, or PROPKA at a given pH.
 
         All criteria must share this engine's checkpoint/vocab; they may differ in method and
         knobs (the sweep). Returns a ``PHDesignSet`` (deduped, lowest energy first).
@@ -1258,7 +1310,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         this backbone's featurised tables read-only (COW). CPU only; results are identical to the
         serial path (each design re-seeds its own RNG), just produced out of order then re-sorted.
         """
-        ctx = self._build_context(atom_array, binder_chain, base_seed=seed)
+        ctx = self._build_context(atom_array, binder_chain, base_seed=seed, protonation=protonation)
         ctx.external_initial_sequences = list(initial_sequences) if initial_sequences else []
         # Score the ORIGINAL seeds (as supplied, no RES-P introduced) with the same featurised
         # tables — stability H + binder global protonation ΔH — so the seed energy is available for
@@ -1311,8 +1363,11 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
     # ------------------------------------------------------------------ #
     # Context: featurise once, expose design field + scorer + masks
     # ------------------------------------------------------------------ #
-    def _build_context(self, atom_array: AtomArray, binder_chain: str, *, base_seed: int = 0) -> "_PHContext":
+    def _build_context(
+        self, atom_array: AtomArray, binder_chain: str, *, base_seed: int = 0, protonation=None
+    ) -> "_PHContext":
         encoding = self.model.graph_featurization_module.TOKEN_ENCODING
+        classifier = _protonation_classifier(_as_protonation(protonation))
 
         # Featurise with the protonation-aware Potts pipeline (mpnn.potts_inference), NOT the
         # engine's _build_network_input — that one is wired to the standard mpnn pipeline which
@@ -1324,7 +1379,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
         _vocab = getattr(self, "_vocab_name", None) or "v4"
         batch = prepare_potts_input(
             atom_array, designed_chains=[binder_chain], structure_noise=0.0,
-            extended_vocab=_vocab,
+            extended_vocab=_vocab, protonation_classifier=classifier,
         )
         network_input = batch["network_input"]
         # prepare_potts_input builds tensors on the default device (CUDA when a GPU is visible),
@@ -1397,6 +1452,7 @@ class PottsMPNNPHEngine(MPNNInferenceEngine):
             network_input=network_input, base_seed=int(base_seed),
             region_masks=region_masks,
             proc_atom_array=proc_atom_array,
+            protonation_classifier=classifier,
         )
 
     # ------------------------------------------------------------------ #
@@ -1862,6 +1918,8 @@ class _PHContext:
     region_masks: Dict[str, torch.Tensor] = field(default_factory=dict)
     # processed atom array of the complex; lets chains be re-encoded alone (mpnn.ph)
     proc_atom_array: Any = None
+    # the labeller that produced the tokens (None = the vocabulary's own); chains re-encoded alone use it too
+    protonation_classifier: Any = None
 
     def __post_init__(self) -> None:
         self.chA_free_idx = (self.free_mask & self.chainA_t).nonzero(as_tuple=False).squeeze(1)
