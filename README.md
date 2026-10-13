@@ -316,13 +316,20 @@ protonation={"states": "propka", "ph": 7.4})` takes `states` only. Residues name
 condition gives them whatever `states` is. PROPKA is an optional install (`uv pip install propka`); without it
 the run stops at once with that instruction.
 
-Logs use Python's `logging`, as terse `key=value` lines. `INFO` says what was used:
-`protonation states=propka ph=7.4 margin=0.5 reference_pka=propka`,
-`propka.states chains=A,B ph=7.40 margin=0.50 HIS=S:3 ASP=D:9 GLU=D:9`,
-`reference_pka site=A:32 res=HIS pka=5.53 source=propka_free constant=6.5`. `WARNING` says what to be careful
-about (the caveats below). With no logging set up, Python prints WARNING records as bare lines on stderr and drops
-INFO ones; `logging.basicConfig(); logging.getLogger("mpnn").setLevel(logging.INFO)` shows both with their level
-(`inference/design_switch.py` does this).
+Logs use Python's `logging`. `INFO` lines state what was used, in plain words:
+
+```text
+Protonation sources: starting states PROPKA (pH 7.4, margin 0.5), reference pKa PROPKA on the free partners.
+PROPKA states for chain(s) A,B at pH 7.40, margin 0.50: ASP 9 deprotonated, GLU 9 deprotonated, HIS 3 neutral.
+Reference pKa of A:32 (HIS): 5.53 from PROPKA on the free partner; the per-type constant is 6.5.
+```
+
+`WARNING` lines are short sentences about what to be careful with, the caveats below: once per Python process
+"Starting states come from PROPKA, but the checkpoint was trained on EV6 labels. Against experiment PROPKA labels
+are weak …", and each time PROPKA's His values enter the model "PROPKA's reference pKa for His did not beat the
+per-type constant on PKAD …". With no logging set up, Python prints WARNING records as bare lines on stderr and
+drops INFO ones; `logging.basicConfig(); logging.getLogger("mpnn").setLevel(logging.INFO)` shows both with their
+level (`inference/design_switch.py` does this).
 
 Caveats, each measured by `benchmarks/propka_vs_experiment.py`:
 
