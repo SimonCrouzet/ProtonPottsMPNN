@@ -353,7 +353,7 @@ each one.
 | **`PHDesignCriteria`** | `interface_distance` (the interface placement cutoff, default 6 Å) |
 | **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`, never repeated); `to_rows` |
 | **robustness** | one device policy for GPU runs; returned designs always hold allowed tokens; strict condition keys; one seed source (`seed` overrides `base_seed`); `report_tokens` for legacy vocabularies |
-| **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), HBPLUS check that fails fast, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
+| **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), HBPLUS check that fails fast and `ipdb` import removed (merged from upstream pull requests #2 and #3, which also correct the HBPLUS note in the install section), `propka` imported where used, `import mpnn.train` works again |
 | **tests · CI** | `foundry/models/mpnn/tests/ph/` (run on synthetic Potts tables) and a ruff + tests workflow |
 
 **Where the original text above no longer holds**
@@ -361,7 +361,6 @@ each one.
 | the original says | now |
 |--------------------|-----|
 | Install: `install.sh` runs `uv venv --clear`; kernel `ProtonPottsMPNN (.venv)` (also in example 2) | it **refuses to overwrite** an existing venv unless given `--clear`; `VENV_DIR` sets where it goes; the kernel is `ProtonPottsMPNN (venv)` |
-| HBPLUS is **not** needed to run the design engine (and the install table) | it **is**: `prepare_potts_input` runs HBPLUS on every structure it featurises. Only `mpnn.ph` itself needs just torch + numpy |
 | example 2 snippet | it needs `seed_source="native"` (the snippet above now has it): the default `"inverse"` needs `initial_sequences` |
 | `foundry/` is "a full verbatim copy" (also under License) | this fork edits the `mpnn` package inside it; the rest is unchanged |
 | pKa benchmark: `… eval_pkad --checkpoints …` with `PROTON_ROOT` | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6` — there is no `--checkpoints` flag, `--extended_vocab` defaults to `v4`, and the default paths point at the original cluster |
