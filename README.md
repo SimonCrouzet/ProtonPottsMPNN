@@ -305,17 +305,20 @@ For example `"protonation": {"states": "propka", "ph": 7.4, "reference_pka": "pr
 `"binding_model": "linked_equilibrium"` and the config refuses it with any other model. `run_ph_redesign(...,
 protonation={"states": "propka", "ph": 7.4})` takes `states` only. Residues named in a condition keep the state the
 condition gives them whatever `states` is. PROPKA is an optional install (`uv pip install propka`); without it
-the run stops at once with that instruction. `logging.getLogger("mpnn").setLevel(logging.INFO)` shows the logs
-(`inference/design_switch.py` does): the source in use, a count of the PROPKA states, and for each named site
-the pKa and where it came from.
+the run stops at once with that instruction.
+
+Logs use Python's `logging`. Warnings print with no setup, as plain lines on stderr. The information lines (the
+source in use, a count of the PROPKA states, and for each named site its pKa and where it came from) need a
+handler and the level: `logging.basicConfig(); logging.getLogger("mpnn").setLevel(logging.INFO)`
+(`inference/design_switch.py` does both).
 
 Caveats, each measured by `benchmarks/propka_vs_experiment.py`:
 
 - **`states`.** The checkpoint was trained on EV6 labels, and PROPKA is a weak labeller against experiment. On
   217 neutron structures (8071 residues) the ROC AUC of its pKa is 0.62 for His and 0.78 for Asp/Glu, and at pH 7
   its His labels are no better than calling every His neutral. EV6 does far better, but it was trained on those
-  structures, so the comparison is not fair. What the setting adds is the dependence on pH. A warning says this
-  once per run.
+  structures, so the comparison is not fair. What the setting adds is the dependence on pH. A warning says this,
+  once per Python process.
 - **`reference_pka`.** PROPKA beats the constant for Asp (PKAD, 221 residues: Pearson r 0.81, mean error 0.71
   against 1.04), only slightly for Glu (254: r 0.71, 0.65 against 0.70), and not for His (171: r 0.15, 1.03
   against 0.80), the residue of most pH switches; a warning appears whenever PROPKA's His values enter the model.
