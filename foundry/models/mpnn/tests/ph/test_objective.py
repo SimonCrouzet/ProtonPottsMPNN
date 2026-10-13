@@ -287,3 +287,8 @@ def test_linked_equilibrium_drives_terms_through_each_conditions_ph(term):
     assert on_ph == 7.4
     expected = ctx.binding.energy(ctx.tokens_in(BASE, "on"), ph=on_ph)
     assert PotencyTerm().value(ctx, BASE) == pytest.approx(expected)
+
+
+def test_plan_search_refuses_non_finite_weights():
+    with pytest.raises(ValueError, match="finite"):
+        plan_search({"stability": 1.0, "switch": float("nan")})
