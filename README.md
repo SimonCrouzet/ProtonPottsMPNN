@@ -81,6 +81,7 @@ the labeller and the fold scoring.
    ends with `181 hydrogen bonds found.`
 
 A missing, mistyped or non-executable `HBPLUS_PATH` stops the run with a message that says which of these it is.
+With the PROPKA protonation source (*Switch design*, above) the design engine does not run HBPLUS at all.
 
 ---
 
@@ -286,6 +287,24 @@ the same designs.
 `"report_tokens": {"HIS": {"deprotonated": ["HID", "HIE"]}}` — a list is averaged (as `dep_map` did), a single
 name picks one token. Without it `site_report` stops and says the state is ambiguous.
 
+**Protonation source.** The input structure's His, Asp and Glu get their starting states from EV6, the
+geometric classifier the checkpoint was trained with: one call per residue, independent of pH. Setting
+`"protonation": {"source": "propka", "ph": 7.4}` in the config (or `protonation=` on `run_ph_redesign`) uses
+PROPKA instead:
+
+| | `ev6` (default) | `propka` |
+|---|---|---|
+| starting state of a residue no condition names | the EV6 call | protonated if pKa > pH + `margin`, neutral if pKa < pH − `margin`, else ambiguous (`-A`); `margin` defaults to 0.5 |
+| reference pKa of a site in `linked_equilibrium` | one constant per residue type (Asp 3.7, Glu 4.3, His 6.5) | PROPKA's value for that site, from the free binder and the free receptor |
+| HBPLUS | needed | not needed: the H-bond passes only feed EV6, so they are skipped |
+
+The free partners give the reference pKa because the shift that binding brings is already in the Potts
+energies; PROPKA on the complex would count it twice. For the binder His of the PD-L1 example, PROPKA gives
+5.5 on the free binder and 3.4 inside the complex. `binding_options.pka_by_site` (`{"A:32": 5.9}`) sets single
+sites by hand and wins over PROPKA. The checkpoint was trained on EV6 labels, so read PROPKA labels as an
+experiment. PROPKA is an optional install (`uv pip install propka`); without it the `propka` source stops with
+that instruction.
+
 Unknown config keys raise instead of being ignored, and so do unknown keys inside a condition (`states`, `ph`,
 `label` — a typo such as `state` is an error, not an empty assignment). A switch term whose `on` and `off`
 conditions (its own, when it names them) impose identical states is refused, since it would be zero for every
@@ -382,6 +401,7 @@ each one.
 | **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`, never repeated); `to_rows` |
 | **robustness** | one device policy for GPU runs; returned designs always hold allowed tokens; strict condition keys; one seed source (`seed` overrides `base_seed`); `report_tokens` for legacy vocabularies |
 | **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), `HBPLUS_PATH` resolved and checked before HBPLUS runs (see *Getting HBPLUS*), `atomworks` kept below 3, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
+| **protonation source** | `protonation: {source: "propka", ph, margin}` labels the input structure from PROPKA instead of EV6 and gives `linked_equilibrium` per-site reference pKa values (`pka_by_site` sets single sites); optional install, no HBPLUS needed |
 | **tests · CI** | `foundry/models/mpnn/tests/ph/` (synthetic Potts tables, plus `test_real_structure.py` on the shipped PD-L1 complex when HBPLUS and a CCD mirror are available) and a ruff + tests workflow |
 
 **Where the original text above no longer holds**
@@ -390,6 +410,7 @@ each one.
 |--------------------|-----|
 | Install: `install.sh` runs `uv venv --clear`; kernel `ProtonPottsMPNN (.venv)` (also in example 2) | it **refuses to overwrite** an existing venv unless given `--clear`; `VENV_DIR` sets where it goes; the kernel is `ProtonPottsMPNN (venv)` |
 | HBPLUS is **not** needed to run the design engine (and the install table) | it **is**: `prepare_potts_input` runs HBPLUS on every structure it featurises. Only `mpnn.ph` itself needs just torch + numpy |
+| Install: the extras include propka | propka is optional now (`uv pip install propka`); only the PROPKA protonation source and the training-time pKa annotation use it |
 | example 2 snippet | it needs `seed_source="native"` (the snippet above now has it): the default `"inverse"` needs `initial_sequences` |
 | `foundry/` is "a full verbatim copy" (also under License) | this fork edits the `mpnn` package inside it; the rest is unchanged |
 | pKa benchmark: `… eval_pkad --checkpoints …` with `PROTON_ROOT` | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6` — there is no `--checkpoints` flag, `--extended_vocab` defaults to `v4`, and the default paths point at the original cluster |
