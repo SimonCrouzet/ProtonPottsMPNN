@@ -1,6 +1,7 @@
 """End-to-end design runs on the toy complex, from a plain config dict."""
 
 import itertools
+from copy import deepcopy
 
 import pytest
 import torch
@@ -231,11 +232,41 @@ def test_identical_states_are_fine_for_linked_equilibrium_when_the_ph_differs():
     run_switch_design(
         make_inputs(), make_config(conditions=identical_conditions(), **options)
     )
-    with pytest.raises(ValueError, match="identical states"):
+    with pytest.raises(ValueError, match="same pH"):
         run_switch_design(
             make_inputs(),
             make_config(conditions=identical_conditions(7.0, 7.0), **options),
         )
+
+
+def test_linked_equilibrium_tells_conditions_apart_only_by_ph():
+    """It sums over every imposed site, so different explicit states do not make a switch."""
+    conditions = deepcopy(SPEC["conditions"])
+    for body in conditions.values():
+        body["ph"] = 7.0
+    options = dict(
+        binding_model="linked_equilibrium", terms={"switch": {"weight": 1.0}}
+    )
+    with pytest.raises(ValueError, match="same pH"):
+        run_switch_design(make_inputs(), make_config(conditions=conditions, **options))
+    no_sites = {"on": {"ph": 7.4, "states": {}}, "off": {"ph": 6.5, "states": {}}}
+    with pytest.raises(ValueError, match="no state on any site"):
+        run_switch_design(make_inputs(), make_config(conditions=no_sites, **options))
+
+
+def test_the_switch_check_uses_the_conditions_the_term_selects():
+    selected = {"terms": {"switch": {"on": "actual_on", "off": "actual_off"}}}
+    # the spec's own on/off are identical, the term's are not: a valid switch
+    conditions = identical_conditions()
+    conditions["actual_on"] = {"states": {"A:1": "deprotonated", "B:2": "deprotonated"}}
+    conditions["actual_off"] = {"states": {"A:1": "protonated", "B:2": "protonated"}}
+    run_switch_design(make_inputs(), make_config(conditions=conditions, **selected))
+    # the spec's on/off differ, the term's are identical: refused
+    conditions = deepcopy(SPEC["conditions"])
+    conditions["actual_on"] = {"states": {"A:1": "protonated", "B:2": "protonated"}}
+    conditions["actual_off"] = {"states": {"A:1": "protonated", "B:2": "protonated"}}
+    with pytest.raises(ValueError, match="'actual_on' and 'actual_off'.*identical"):
+        run_switch_design(make_inputs(), make_config(conditions=conditions, **selected))
 
 
 def _design_with_forbidden_energy(forbidden_stability):
