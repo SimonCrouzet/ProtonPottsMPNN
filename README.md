@@ -245,6 +245,10 @@ run.to_rows("A")                           # one dict per design: sequence, n_mu
 run.site_report(best)                      # per condition and site: complex vs free-partner preference
 ```
 
+From the command line, `python inference/design_switch.py` runs the example above on the shipped PD-L1 complex
+(`--help` lists the flags: the two sites, the pH values and states, the binding model, `--protonation propka`)
+and writes the ranked designs to `inference/outputs/switch_designs.tsv`.
+
 **Redesign around a residue.** `designable.near` keeps only the binder positions the model couples to the
 named sites — the same neighbourhood `neighbour_k` / `max_mutations` define in `run_ph_redesign`, except that
 a site can now be a **target** residue (`k` caps each site's neighbours, `max_mutations` the total — one cap on
@@ -301,9 +305,14 @@ PROPKA instead:
 The free partners give the reference pKa because the shift that binding brings is already in the Potts
 energies; PROPKA on the complex would count it twice. For the binder His of the PD-L1 example, PROPKA gives
 5.5 on the free binder and 3.4 inside the complex. `binding_options.pka_by_site` (`{"A:32": 5.9}`) sets single
-sites by hand and wins over PROPKA. The checkpoint was trained on EV6 labels, so read PROPKA labels as an
-experiment. PROPKA is an optional install (`uv pip install propka`); without it the `propka` source stops with
-that instruction.
+sites by hand and wins over PROPKA. The two uses are not equally good, and `benchmarks/propka_vs_experiment.py`
+scores them against experiment. As a reference pKa, PROPKA beats the per-type constant for Asp (PKAD, 221
+residues: Pearson r 0.81, mean error 0.71 against 1.04) and slightly for Glu (254: r 0.71, 0.65 against 0.70),
+but not for His (171: r 0.15, 1.03 against 0.80), so consider setting His sites with `pka_by_site`. As a source
+of starting states it is weak: against the experimental states of 217 neutron structures, the ROC AUC of its pKa
+is 0.62 for His and 0.78 for Asp/Glu; EV6, which was trained on those structures, does far better. The
+checkpoint was trained on EV6 labels, so read PROPKA labels as an experiment. PROPKA is an optional install
+(`uv pip install propka`); without it the `propka` source stops with that instruction.
 
 Unknown config keys raise instead of being ignored, and so do unknown keys inside a condition (`states`, `ph`,
 `label` — a typo such as `state` is an error, not an empty assignment). A switch term whose `on` and `off`
@@ -353,7 +362,8 @@ are set.
 |------------|-----|-----|
 | **label a PDB** | `HBPLUS_PATH=… python labeller/label_pdb.py` | `labeller/outputs/protonation_labels.csv` |
 | **design a binder** | `python inference/design_ph.py` | placement / trajectory / Pareto PNGs + `designs*.fasta` / `.tsv` (with protonation states) |
-| **switch design, explicit states** | `engine.run_switch_design(atom_array=aa, binder_chain="A", config=config)` (see above) | ranked designs: `run.to_rows("A")`, `run.site_report(best)` |
+| **switch design, explicit states** | `python inference/design_switch.py`, or `engine.run_switch_design(atom_array=aa, binder_chain="A", config=config)` (see above) | ranked designs: `run.to_rows("A")`, `run.site_report(best)` |
+| **PROPKA against experiment** | `python benchmarks/propka_vs_experiment.py pkad` (or `neutron`, slower, needs HBPLUS) | reference-pKa and starting-state scores against PKAD and the neutron structures |
 | **test `mpnn.ph`** | `cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q` | pass / fail |
 | **retrain the labeller** | `python labeller/05_train_one.py HIS features 1200` | `labeller/models/automl_feature_HIS/` |
 | **labeller AUPR** | `python labeller/pr_curve.py` | `labeller/{his,acid}_pr.png` (AP HIS 0.70, acids 0.33) |
@@ -401,6 +411,7 @@ each one.
 | **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`, never repeated); `to_rows` |
 | **robustness** | one device policy for GPU runs; returned designs always hold allowed tokens; strict condition keys; one seed source (`seed` overrides `base_seed`); `report_tokens` for legacy vocabularies |
 | **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), `HBPLUS_PATH` resolved and checked before HBPLUS runs (see *Getting HBPLUS*), `atomworks` kept below 3, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
+| **inference scripts** | `design_switch.py` runs switch design from the command line; `design_ph.py` designs on the CPU and keeps the GPU for the RF3 refold; scoring a refolded design no longer fails when a GPU is visible |
 | **protonation source** | `protonation: {source: "propka", ph, margin}` labels the input structure from PROPKA instead of EV6 and gives `linked_equilibrium` per-site reference pKa values (`pka_by_site` sets single sites); optional install, no HBPLUS needed |
 | **tests · CI** | `foundry/models/mpnn/tests/ph/` (synthetic Potts tables, plus `test_real_structure.py` on the shipped PD-L1 complex when HBPLUS and a CCD mirror are available) and a ruff + tests workflow |
 
