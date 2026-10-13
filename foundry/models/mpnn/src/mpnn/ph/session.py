@@ -274,25 +274,39 @@ def _check_switch_can_differ(
 ) -> None:
     """Refuse a switch term whose ``on`` and ``off`` conditions cannot differ.
 
-    With state-based binding models the energies depend on the conditions only through
-    their states, so identical states make the switch exactly zero for every design;
-    ``linked_equilibrium`` also depends on the pH.
+    The term's own ``on`` / ``off`` override the spec's, as when it is scored. With the
+    state-based binding models the energies depend on a condition only through its
+    states, so identical states make the switch exactly zero for every design.
+    ``linked_equilibrium`` sums over every site a condition imposes, so only the pH
+    tells the conditions apart (and it needs at least one such site).
     """
-    on, off = config.spec.on, config.spec.off
-    weights, _ = config.weights_and_terms()
-    if "switch" not in weights or on is None or off is None:
+    _, terms = config.weights_and_terms()
+    switch = terms.get("switch")
+    if switch is None:
         return
-    if conditions[on].token_by_position != conditions[off].token_by_position:
-        return
-    if config.binding_model == "linked_equilibrium" and (
-        conditions[on].ph != conditions[off].ph
-    ):
-        return
+    on, off = switch.on or config.spec.on, switch.off or config.spec.off
+    if on not in conditions or off not in conditions:
+        return  # the term reports a missing or unknown condition when it is scored
+    if config.binding_model == "linked_equilibrium":
+        if conditions[on].ph != conditions[off].ph and config.spec.sites():
+            return
+        reason = (
+            "have the same pH"
+            if conditions[on].ph == conditions[off].ph
+            else "impose no state on any site"
+        )
+        hint = "give them different pH values and name the sites that titrate"
+    else:
+        if conditions[on].token_by_position != conditions[off].token_by_position:
+            return
+        reason = "impose identical states"
+        hint = (
+            "check the condition keys (for example 'states', not 'state') and the "
+            "states you assigned"
+        )
     raise ValueError(
-        f"The {on!r} and {off!r} conditions impose identical states"
-        + (" and the same pH" if config.binding_model == "linked_equilibrium" else "")
-        + ", so the switch term is zero for every design. Check the condition keys "
-        "(for example 'states', not 'state') and the states you assigned."
+        f"The {on!r} and {off!r} conditions {reason}, so the switch term is zero for "
+        f"every design. {hint[0].upper()}{hint[1:]}."
     )
 
 
