@@ -184,3 +184,25 @@ def test_max_mutations_caps_the_shared_designable_set_not_each_state():
         states, config(designable={"chains": ["A"], "near": {"sites": ["B:2"]}})
     )
     assert uncapped.designable == [1, 2]  # without the cap the states differ
+
+
+def test_each_state_keeps_its_own_fixed_binder_tokens():
+    """A fixed His that is HIS-P in one complex and HIS-S in another stays so in both."""
+    states = two_states()
+    for name, token in [("human", 2), ("mouse", 3)]:
+        tokens = states[name].tokens.clone()
+        tokens[0] = token
+        states[name] = dataclasses.replace(states[name], tokens=tokens)
+    conditions = {  # only the target site is imposed; A:1 is neither designed nor imposed
+        "on": {"states": {"B:2": "deprotonated"}},
+        "off": {"states": {"B:2": "protonated"}},
+    }
+    run = run_switch_design_ensemble(
+        states, config(conditions=conditions, designable={"include": ["A:2", "A:3"]})
+    )
+    record = run.result.records[0]
+    expected = states["mouse"].tokens.clone()
+    expected[run.designable] = record.tokens[run.designable]
+    actual = run.objective.tokens_for(run.members["mouse"], record.tokens)
+    assert torch.equal(actual, expected)
+    assert int(actual[0]) == 3

@@ -41,13 +41,20 @@ class EnsembleMember:
 
 
 class EnsembleObjective(Objective):
-    """Objective over several target states; design tokens use the first state's indexing."""
+    """Objective over several target states; design tokens use the first state's indexing.
+
+    ``designable`` lists the shared binder positions (first state's indexing) that the
+    design writes into every state. Every other binder position keeps the token its own
+    state has, so a fixed residue is not given another state's protonation. Without it,
+    all shared binder positions are written.
+    """
 
     def __init__(
         self,
         members: Sequence[EnsembleMember],
         reduce: str = "max",
         scales=None,
+        designable: Optional[Sequence[int]] = None,
     ) -> None:
         if not members:
             raise ValueError("An ensemble needs at least one target state.")
@@ -61,12 +68,14 @@ class EnsembleObjective(Objective):
         super().__init__(reference.objective.ctx, reference.objective.terms, scales)
         self.members = list(members)
         self.reduce = reduce
+        self.designable = None if designable is None else sorted(set(designable))
 
     def tokens_for(self, member: EnsembleMember, tokens: torch.Tensor) -> torch.Tensor:
-        """The state's sequence with the shared binder tokens written in."""
+        """The state's sequence with the designed binder tokens written in."""
         out = member.base_tokens.clone()
-        for reference_position, position in member.position_map.items():
-            out[position] = tokens[reference_position]
+        positions = member.position_map if self.designable is None else self.designable
+        for reference_position in positions:
+            out[member.position_map[reference_position]] = tokens[reference_position]
         return out
 
     @staticmethod

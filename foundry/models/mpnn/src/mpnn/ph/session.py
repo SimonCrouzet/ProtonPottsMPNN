@@ -480,10 +480,12 @@ def run_switch_design_ensemble(
         members[name] = EnsembleMember(
             name, objective, conditions, inputs, inputs.tokens.clone(), position_map
         )
-    objective = EnsembleObjective(list(members.values()), reduce=config.target_reduce)
     # one total cap on the shared set; capping each state and uniting would exceed it
     designable = cap_by_rank(
         sorted(designable_keys), shared_ranks, _cap(config.designable)
+    )
+    objective = EnsembleObjective(
+        list(members.values()), reduce=config.target_reduce, designable=designable
     )
     result = _search(objective, reference, designable, config)
     return EnsembleRun(
