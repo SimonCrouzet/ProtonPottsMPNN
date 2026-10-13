@@ -7,6 +7,7 @@ back to a default. Defaults live here; command-line flags (or a YAML file) overr
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -36,9 +37,59 @@ _TOP_LEVEL = {
     "allow_bare_titratable",
     "target_reduce",
     "report_tokens",
+    "protonation",
 }
+_PROTONATION = {"source", "ph", "margin"}
+PROTONATION_SOURCES = ("ev6", "propka")
+DEFAULT_PROPKA_MARGIN = 0.5
 _DESIGNABLE = {"chains", "include", "exclude", "near"}
 _NEAR = {"sites", "k", "max_mutations"}
+
+
+@dataclass(frozen=True)
+class ProtonationSource:
+    """Where the structure's starting protonation states and the reference pKa values come from.
+
+    ``ev6`` (default) is the geometric classifier trained on neutron structures: one call per
+    residue, independent of pH, and the labelling the checkpoint was trained on. ``propka`` uses
+    PROPKA instead, at the pH ``ph``: a residue is protonated when its pKa is above the pH,
+    neutral when below, and ambiguous (``-A``) when the two are within ``margin`` (default 0.5).
+    With ``propka``, ``linked_equilibrium`` also takes each site's reference pKa from PROPKA run
+    on the free binder and the free receptor, in place of one constant per residue type.
+    Residues named in a condition keep the state the condition gives them either way.
+    """
+
+    source: str = "ev6"
+    ph: Optional[float] = None
+    margin: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.source not in PROTONATION_SOURCES:
+            raise ValueError(
+                f"protonation.source must be one of {PROTONATION_SOURCES}."
+            )
+        if self.source == "ev6":
+            if self.ph is not None or self.margin is not None:
+                raise ValueError(
+                    "protonation.ph and .margin only apply to the 'propka' source."
+                )
+            return
+        if self.ph is None or not math.isfinite(self.ph):
+            raise ValueError(
+                "The 'propka' protonation source needs a finite protonation.ph."
+            )
+        if self.margin is None:
+            object.__setattr__(self, "margin", DEFAULT_PROPKA_MARGIN)
+        if not math.isfinite(self.margin) or self.margin < 0:
+            raise ValueError("protonation.margin must be a finite number >= 0.")
+
+    @classmethod
+    def from_dict(cls, cfg: Optional[Mapping[str, Any]]) -> "ProtonationSource":
+        cfg = dict(cfg or {})
+        unknown = set(cfg) - _PROTONATION
+        if unknown:
+            raise ValueError(f"Unknown protonation keys: {sorted(unknown)}")
+        return cls(**cfg)
 
 
 @dataclass(frozen=True)
@@ -94,6 +145,8 @@ class SwitchDesignConfig:
     # how site_report compares states a vocabulary names ambiguously (v3/v4 have two neutral
     # His tautomers): {"HIS": {"deprotonated": ["HID", "HIE"]}}; a list is averaged
     report_tokens: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # starting protonation states and reference pKa values: EV6 (default) or PROPKA
+    protonation: ProtonationSource = field(default_factory=ProtonationSource)
 
     def __post_init__(self) -> None:
         if self.block_size < 1 or self.max_rounds < 1 or self.n_seeds < 1:
@@ -148,6 +201,7 @@ class SwitchDesignConfig:
             )
             if key in cfg
         }
+        options["protonation"] = ProtonationSource.from_dict(cfg.get("protonation"))
         return cls(
             spec=StateSpec.from_dict(
                 {k: cfg[k] for k in ("conditions", "on", "off") if k in cfg}

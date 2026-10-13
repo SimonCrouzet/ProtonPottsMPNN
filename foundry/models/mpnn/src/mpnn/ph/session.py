@@ -38,7 +38,7 @@ from mpnn.ph.vocab_meta import TokenTable
 
 logger = logging.getLogger(__name__)
 
-_LINKED_OPTIONS = {"beta", "max_sites", "pka_by_parent"}
+_LINKED_OPTIONS = {"beta", "max_sites", "pka_by_parent", "pka_by_site"}
 
 
 @dataclass
@@ -64,6 +64,9 @@ class DesignInputs:
     partner_rank: Optional[Callable[[int], Sequence[int]]] = None
     # the model's contact table E_idx [L, K] (slot 0 = the residue itself); needed by designable.near
     neighbour_index: Optional[np.ndarray] = None
+    # reference pKa of each titratable site in the free partners (PROPKA, filled by the engine);
+    # used by linked_equilibrium when config.protonation.source == "propka"
+    site_pka: Optional[Mapping[SiteKey, float]] = None
 
 
 @dataclass
@@ -228,6 +231,26 @@ def _lookup(index: Mapping[SiteKey, int], text: str) -> int:
     return index[key]
 
 
+def _reference_pka_by_site(
+    config: SwitchDesignConfig,
+    inputs: DesignInputs,
+    explicit: Optional[Mapping[str, float]],
+) -> Optional[Dict[SiteKey, float]]:
+    """Per-site reference pKa: PROPKA's when it is the protonation source, then the user's own
+    ``binding_options.pka_by_site`` on top (``{"A:32": 5.9}``)."""
+    by_site: Dict[SiteKey, float] = {}
+    if config.protonation.source == "propka":
+        if inputs.site_pka is None:
+            raise ValueError(
+                "The 'propka' protonation source needs the free partners' PROPKA pKa values "
+                "(DesignInputs.site_pka) for linked_equilibrium; the engine computes them."
+            )
+        by_site.update(inputs.site_pka)
+    for text, value in (explicit or {}).items():
+        by_site[SiteKey.parse(text)] = float(value)
+    return by_site or None
+
+
 def _binding_model(
     config: SwitchDesignConfig,
     inputs: DesignInputs,
@@ -259,6 +282,9 @@ def _binding_model(
             site_index,
             inputs.parents,
             options.pop("pka_by_parent", None),
+            pka_by_site=_reference_pka_by_site(
+                config, inputs, options.pop("pka_by_site", None)
+            ),
         )
         return make_binding_model(name, sites=sites, **views, **options)
     return make_binding_model(name, **views, **options)  # raises for unknown names

@@ -203,8 +203,14 @@ def linked_sites_from_spec(
     site_index: Mapping[SiteKey, int],
     parents: Sequence[str],
     pka_by_parent: Optional[Mapping[str, float]] = None,
+    pka_by_site: Optional[Mapping[SiteKey, float]] = None,
 ) -> List[TitratableSite]:
-    """One :class:`TitratableSite` per residue the spec mentions, on either chain."""
+    """One :class:`TitratableSite` per residue the spec mentions, on either chain.
+
+    A site's reference pKa is ``pka_by_site[site]`` when given, else the value for its residue
+    type in ``pka_by_parent`` (default :data:`DEFAULT_MODEL_PKA`). It is the pKa of the free
+    partner; what binding adds comes from the Potts energies.
+    """
     pka_by_parent = dict(DEFAULT_MODEL_PKA if pka_by_parent is None else pka_by_parent)
     sites = []
     for key in sorted(spec.sites()):
@@ -212,14 +218,24 @@ def linked_sites_from_spec(
             raise KeyError(f"Site {key} is not in the structure.")
         position = site_index[key]
         parent = parents[position]
-        if parent not in pka_by_parent:
+        if pka_by_site and key in pka_by_site:
+            pka = float(pka_by_site[key])
+        elif parent in pka_by_parent:
+            pka = float(pka_by_parent[parent])
+            if pka_by_site:
+                logger.warning(
+                    "No per-site pKa for %s; using the %s value %.1f.", key, parent, pka
+                )
+        else:
             raise KeyError(f"No reference pKa for {parent} (site {key}).")
+        if not math.isfinite(pka):
+            raise ValueError(f"The reference pKa of {key} must be finite (got {pka}).")
         sites.append(
             TitratableSite(
                 position=position,
                 protonated_token=table.index(table.resolve(parent, "protonated")),
                 deprotonated_token=table.index(table.resolve(parent, "deprotonated")),
-                pka=float(pka_by_parent[parent]),
+                pka=pka,
             )
         )
     return sites
