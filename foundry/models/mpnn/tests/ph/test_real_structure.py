@@ -230,6 +230,36 @@ def test_the_site_report_has_a_row_per_condition_and_site(run):
         assert np.isfinite(row["gap_complex"]) and np.isfinite(row["gap_free"])
 
 
+def test_propka_reference_pka_can_be_used_with_ev6_states(engine, atoms, run):
+    pytest.importorskip("propka")
+    from mpnn.transforms.propka_labeller import propka_site_pka
+
+    config = {
+        **CONFIG,
+        "binding_model": "linked_equilibrium",
+        "protonation": {"reference_pka": "propka"},
+    }
+    linked = engine.run_switch_design(
+        atom_array=atoms, binder_chain=BINDER, config=config, seed=0
+    )
+    assert torch.equal(
+        linked.inputs.tokens, run.inputs.tokens
+    )  # the starting states are still EV6's
+    chain_of = np.array([str(c) for c in atoms.chain_id])
+    free = {c: propka_site_pka(atoms[chain_of == c]) for c in ("A", "B")}
+    chosen = {
+        (
+            str(linked.inputs.chain_ids[s.position]),
+            int(linked.inputs.res_ids[s.position]),
+        ): s.pka
+        for s in linked.objective.ctx.binding.sites
+    }
+    assert chosen == {
+        ("A", 32): pytest.approx(free["A"][("A", 32)]),
+        ("B", 105): pytest.approx(free["B"][("B", 105)]),
+    }
+
+
 def test_linked_equilibrium_runs_on_the_real_complex(engine, atoms):
     config = {**CONFIG, "binding_model": "linked_equilibrium"}
     linked = engine.run_switch_design(

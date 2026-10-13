@@ -1,4 +1,4 @@
-"""Switch design with PROPKA as the protonation source, on the shipped PD-L1 complex.
+"""Switch design with PROPKA for the starting states and for the reference pKa, on the shipped PD-L1 complex.
 
 The PROPKA source labels residues from pKa values and skips the H-bond passes, so these tests
 run without HBPLUS (they remove it from the environment). They need atomworks, propka, a CCD
@@ -27,7 +27,10 @@ CHECKPOINT = (
 META = json.loads((EXAMPLES / "example_meta.json").read_text())
 BINDER = META["binder_chain"]
 BINDER_SITE, TARGET_SITE = "A:32", "B:105"
-PROPKA = {"source": "propka", "ph": 7.4}
+PROPKA = {
+    "states": "propka",
+    "ph": 7.4,
+}  # starting states from PROPKA, constant reference pKa
 
 CONFIG = {
     "conditions": {
@@ -46,7 +49,7 @@ CONFIG = {
         "near": {"sites": [TARGET_SITE], "k": 16, "max_mutations": 8},
     },
     "binding_model": "linked_equilibrium",
-    "protonation": PROPKA,
+    "protonation": {**PROPKA, "reference_pka": "propka"},
     "search": "single",
     "block_size": 2,
     "max_rounds": 2,
@@ -132,12 +135,12 @@ def test_the_context_carries_propka_labels_and_needs_no_hbplus(engine, atoms):
     for ph in (7.4, 3.0):
         expected = PropkaLabeller(ph)(atoms)
         ctx = engine._build_context(
-            atoms, BINDER, protonation={"source": "propka", "ph": ph}
+            atoms, BINDER, protonation={"states": "propka", "ph": ph}
         )
         assert labelled(ctx, expected) == expected
     # the pipeline is cached per labeller: the two pH values gave different tokens
     low = engine._build_context(
-        atoms, BINDER, protonation={"source": "propka", "ph": 3.0}
+        atoms, BINDER, protonation={"states": "propka", "ph": 3.0}
     )
     high = engine._build_context(atoms, BINDER, protonation=PROPKA)
     assert not np.array_equal(low.S_native.numpy(), high.S_native.numpy())
@@ -204,7 +207,13 @@ def test_run_ph_redesign_takes_the_propka_source_too(engine, atoms):
 
 def test_the_example_script_takes_the_propka_source(tmp_path):
     table, printed = run_example_script(
-        tmp_path, "--protonation", "propka", "--binding-model", "linked_equilibrium"
+        tmp_path,
+        "--states",
+        "propka",
+        "--reference-pka",
+        "propka",
+        "--binding-model",
+        "linked_equilibrium",
     )
     assert len(table) >= 1 and "best design" in printed
     assert {
@@ -214,3 +223,15 @@ def test_the_example_script_takes_the_propka_source(tmp_path):
         "term_potency",
         "term_switch",
     } <= set(table.columns)
+
+
+def test_propka_states_alone_leave_the_reference_pka_at_the_constants(engine, atoms):
+    from mpnn.ph.binding import DEFAULT_MODEL_PKA
+
+    config = {**CONFIG, "protonation": PROPKA}
+    run = engine.run_switch_design(
+        atom_array=atoms, binder_chain=BINDER, config=config, seed=0
+    )
+    assert sorted(site.pka for site in run.objective.ctx.binding.sites) == sorted(
+        [DEFAULT_MODEL_PKA["HIS"], DEFAULT_MODEL_PKA["ASP"]]
+    )
