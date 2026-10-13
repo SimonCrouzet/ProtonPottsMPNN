@@ -63,6 +63,25 @@ a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there ar
 | **benchmarks** (`benchmarks/`) | ✅ | — | — | ProteinMPNN arm only |
 | **train** (`training/`, reference) | ✅ | ✅ | — | — |
 
+### Getting HBPLUS
+
+HBPLUS (McDonald & Thornton, *J Mol Biol* 238:777, 1994) is a C program for hydrogen-bond geometry, written
+at UCL and distributed by the Thornton group at EMBL-EBI. It is not on PyPI or conda. The structure pipeline
+runs it on **every** structure it featurises (`prepare_potts_input`), so the design engine needs it as well as
+the labeller and the fold scoring.
+
+1. Get `hbplus.tar.gz` from the [EBI download page](https://www.ebi.ac.uk/thornton-srv/software/HBPLUS/download.html)
+   or the copy in [RomanLas/HBPLUS](https://github.com/RomanLas/HBPLUS). The archive carries a confidentiality
+   agreement (`confid.txt`): use for your own research, and cite the paper above. Do not commit the source or the
+   binary to this repository.
+2. `tar -xzf hbplus.tar.gz && cd hbplus && make` (needs `gcc`; version 3.2 compiles with warnings only).
+3. `export HBPLUS_PATH=/absolute/path/to/hbplus/hbplus` — the executable itself, not its directory.
+4. Check it on the shipped example: in a scratch directory,
+   `cp inference/examples/pdl1_seed_binder.pdb x.pdb && "$HBPLUS_PATH" -h 2.5 -d 3.5 x.pdb x.pdb | tail -1`
+   ends with `181 hydrogen bonds found.`
+
+A missing, mistyped or non-executable `HBPLUS_PATH` stops the run with a message that says which of these it is.
+
 ---
 
 ## Two examples
