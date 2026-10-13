@@ -157,7 +157,7 @@ def test_resolve_designable_chains_includes_excludes_and_condition_sites(caplog)
             RES_IDS,
             [SiteKey("A", 1)] + spec_sites,
         )
-    assert got == [1, 2] and "set by a condition" in caplog.text
+    assert got == [1, 2] and "set_by_condition" in caplog.text
 
 
 @pytest.mark.parametrize(

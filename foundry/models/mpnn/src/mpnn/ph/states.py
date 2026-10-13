@@ -211,9 +211,9 @@ def resolve_spec(
     """Resolve every condition; warn when conditions set different sites."""
     for name, missing in spec.uncovered_sites().items():
         logger.warning(
-            "Condition %r leaves %s at their input state while another condition sets them.",
+            "states condition=%s unset_sites=%s kept=input_state",
             name,
-            sorted(str(site) for site in missing),
+            ",".join(sorted(str(site) for site in missing)),
         )
     return {
         name: resolve_condition(cond, table, site_index, parents)

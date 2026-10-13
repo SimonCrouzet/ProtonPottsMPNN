@@ -32,12 +32,10 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _CAVEAT = (
-    "Protonation states come from PROPKA, not from EV6, which is what the checkpoint was trained on. "
-    "Against the experimental states of the neutron structures PROPKA is a weak labeller (ROC AUC of "
-    "its pKa 0.62 for His, 0.78 for Asp/Glu; see the README), so read the designs as an experiment."
+    "propka.states labels=propka trained_on=ev6 "
+    "neutron_roc_auc his=0.62 acid=0.78 (README: Protonation source)"
 )
 _caveat_shown = False
-_WORDS = {"P": "protonated", "S": "neutral", "D": "deprotonated", "A": "ambiguous"}
 
 # PROPKA reports a carboxylate group for every Asp, Glu and C terminus, so a side chain is told
 # apart by the atom its group is anchored on (the C terminus is anchored on "C").
@@ -158,9 +156,7 @@ class PropkaLabeller:
         unscored = [key for key in residues if key not in pka]
         if unscored:
             logger.warning(
-                "PROPKA gave no pKa for %d His/Asp/Glu residue(s), labelled ambiguous: %s",
-                len(unscored),
-                unscored[:5],
+                "propka.states missing_pka n=%d label=A first=%s", len(unscored), unscored[:5]
             )
         tokens = {
             key: token_from_pka(key[2], pka.get(key, math.nan), self.ph, self.margin) for key in residues
@@ -176,17 +172,15 @@ class PropkaLabeller:
         by_type: Dict[str, Dict[str, int]] = {}
         for (_, _, name), token in tokens.items():
             counts = by_type.setdefault(name, {})
-            word = _WORDS[token[-1]]
-            counts[word] = counts.get(word, 0) + 1
-        summary = "; ".join(
-            f"{name}: " + ", ".join(f"{n} {word}" for word, n in sorted(counts.items()))
+            counts[token[-1]] = counts.get(token[-1], 0) + 1
+        summary = " ".join(
+            f"{name}=" + ",".join(f"{letter}:{n}" for letter, n in sorted(counts.items()))
             for name, counts in sorted(by_type.items())
         )
         logger.info(
-            "PROPKA protonation states of chain(s) %s at pH %.2f (ambiguous within %.2f of the pKa): %s. "
-            "Residues named in a condition keep the state the condition gives them.",
+            "propka.states chains=%s ph=%.2f margin=%.2f %s",
             ",".join(chains),
             self.ph,
             self.margin,
-            summary or "no His, Asp or Glu",
+            summary or "none",
         )

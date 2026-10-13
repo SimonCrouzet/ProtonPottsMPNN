@@ -264,7 +264,10 @@ def plan_search(
         raise ValueError("At least one term needs a positive weight.")
     if len(names) == 1:
         if search == "pareto":
-            logger.info("Only %r is active: running single-objective.", names[0])
+            logger.info(
+                "search mode=single term=%s reason=pareto_with_one_active_term",
+                names[0],
+            )
         return SearchPlan(
             names, np.ones((1, 1)), scalarisation or "weighted_sum", "single"
         )

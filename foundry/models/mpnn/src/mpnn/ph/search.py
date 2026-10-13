@@ -144,9 +144,9 @@ def run_search(
         for record in records[: n_select if n_select else len(records)]:
             record.selected = True
     logger.info(
-        "%s search over %s: %d designs from %d weight vectors",
+        "search mode=%s terms=%s designs=%d weight_vectors=%d",
         plan.mode,
-        names,
+        ",".join(names),
         len(records),
         len(plan.weight_vectors),
     )
