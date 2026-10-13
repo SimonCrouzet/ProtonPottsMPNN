@@ -20,7 +20,11 @@ import json
 from pathlib import Path
 
 os.environ.pop("DEBUG", None)                     # a stray non-boolean DEBUG in your shell breaks environs/foundry
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")  # CPU is plenty for one small binder
+# The design step runs on the CPU: for one small binder it is faster there (17 s against 116 s for the example on
+# an RTX 3070) and it lets the sweep use a fork pool. A GPU is only needed for the optional RF3 refold, so it
+# stays visible when RF3_CKPT is set.
+if not os.environ.get("RF3_CKPT"):
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 import numpy as np
 import pandas as pd
@@ -53,7 +57,7 @@ print(f"example: {META['pdb_id']}  binder chain {BINDER_CHAIN}  binder_len {META
 from mpnn.inference_engines.potts_mpnn_ph import PottsMPNNPHEngine, PHDesignCriteria
 
 engine = PottsMPNNPHEngine(
-    checkpoint_path=str(CKPT), extended_vocab="v6",
+    checkpoint_path=str(CKPT), extended_vocab="v6", device="cpu",
     out_directory=None, write_fasta=False, write_structures=False,
 )
 atom_array = PDBFile.read(str(PDB)).get_structure(model=1)
