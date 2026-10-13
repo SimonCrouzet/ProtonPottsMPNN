@@ -40,17 +40,20 @@ VENV_DIR=~/venvs/ppm ./install.sh   # put the venv elsewhere (default .venv)
 source .venv/bin/activate
 ```
 
-`install.sh` runs `uv venv --clear` then a single `uv pip install -e ./foundry -r requirements-extra.txt`
-(the one resolution keeps both the foundry core — torch, lightning, atomworks[ml] — and the extras — the
-FLAML stack, jupyter, propka), verifies `import mpnn` resolves inside this folder, and registers the venv as
-a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there are no `sys.path` hacks.
+`install.sh` creates the venv with `uv venv` (it refuses to overwrite an existing one unless you pass `--clear`),
+then runs a single `uv pip install -e ./foundry -r requirements-extra.txt` (the one resolution keeps both the
+foundry core — torch, lightning, atomworks[ml] — and the extras — the FLAML stack, jupyter, plots), verifies
+`import mpnn` resolves inside this folder, and registers the venv as a Jupyter kernel `ProtonPottsMPNN (venv)`.
+Scripts just `import mpnn`; there are no `sys.path` hacks. `atomworks` is kept below 3, because version 3.0 rejects
+atom arrays without a `charge` annotation and the structure pipeline fails on it. PROPKA is not installed (see
+*Protonation source*); `uv pip install propka` adds it.
 
 - **Python 3.12** is required (`mpnn`/`foundry` pin `>=3.12,<3.13`).
 - **Line endings** are LF (`.gitattributes`), so a checkout on Windows or `/mnt/d` runs `install.sh` and the SLURM
   scripts unchanged.
-- **HBPLUS** is an external C binary (not pip-installable) used by the **labeller** and the **fold scoring**
-  to read H-bond geometry. Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`). It is
-  **not** needed to run the design engine (which only reads the trained checkpoint).
+- **HBPLUS** is an external C binary (not pip-installable) used by the **labeller**, the **fold scoring** and the
+  **design engine** (the structure pipeline runs it on every structure it featurises) to read H-bond geometry.
+  Point `HBPLUS_PATH` at your build (`export HBPLUS_PATH=/path/to/hbplus`); *Getting HBPLUS* says where to get it.
 - Let the install finish uninterrupted — a killed `uv pip install` can leave the venv half-written (package
   metadata present, module files missing). If imports fail oddly, repair in place with
   `uv pip install --python .venv/bin/python --reinstall -e ./foundry -r requirements-extra.txt`.
@@ -58,10 +61,12 @@ a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there ar
 | part | needs mpnn/torch | needs HBPLUS | needs FLAML stack | needs external oracle weights |
 |------|:---:|:---:|:---:|:---:|
 | **label a PDB** (`labeller/`) | ✅ | ✅ | ✅ | — |
-| **design a binder** (`inference/`) | ✅ | — | — | — |
+| **design a binder** (`inference/`) | ✅ | ✅ ¹ | ✅ | — |
 | **score a fold** (`scoring/`) | ✅ | ✅ (pH-bonds) | — | — |
 | **benchmarks** (`benchmarks/`) | ✅ | — | — | ProteinMPNN arm only |
 | **train** (`training/`, reference) | ✅ | ✅ | — | — |
+
+¹ Not with `protonation.states: propka` (*Protonation source*, below), which labels from PROPKA and never runs HBPLUS.
 
 ### Getting HBPLUS
 
@@ -81,7 +86,7 @@ the labeller and the fold scoring.
    ends with `181 hydrogen bonds found.`
 
 A missing, mistyped or non-executable `HBPLUS_PATH` stops the run with a message that says which of these it is.
-With `protonation.states` set to `propka` (*Switch design*, above) the design engine does not run HBPLUS at all.
+With `protonation.states` set to `propka` (*Switch design*, below) the design engine does not run HBPLUS at all.
 
 ---
 
@@ -126,7 +131,7 @@ internal design campaigns.
 
 ```bash
 python inference/design_ph.py       # -> inference/outputs/ (see below)
-# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (.venv)" kernel)
+# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (venv)" kernel)
 ```
 ```python
 from mpnn.inference_engines.potts_mpnn_ph import PottsMPNNPHEngine, PHDesignCriteria
@@ -173,11 +178,16 @@ order). Two designs that share an id but differ in sequence are both kept, the s
 **Fold the Pareto designs.** It then picks `N_FOLD` designs off the Pareto front and folds each with the
 **packaged RF3 engine** (`fold_rf3.py`, from_target templating: the target chain is templated, the binder is
 folded from its designed sequence), scoring charge clashes + pH-sensitive H-bonds at the pinned centres. RF3
-**code** ships here, but the **weights (~3 GB) do not** — set `RF3_CKPT=/abs/rf3_*.ckpt` and run on a **GPU**
-(with the RF3 atom-embedding cache) to fold. This path was **exercised end-to-end** (input build → checkpoint
-load → RF3 forward → a 2-chain binder+target `.cif`) with an internal checkpoint; on a GPU node with the
-embedding cache it produces a physical fold. Without RF3 the notebook still runs: it **exports** the selected
-designs (`pareto_fold_manifest.json`) ready to fold elsewhere and scores a shipped real RF3 fold as the demo.
+**code** ships here, but the **weights (3.04 GB) do not**. `foundry install rf3 --checkpoint-dir DIR` fetches
+`rf3_foundry_01_24_latest_remapped.ckpt`; check its size (3,038,876,446 bytes), because on a slow connection the
+installer reported success after writing 0.5 MB, and `curl -C - -o … https://files.ipd.uw.edu/pub/rf3/rf3_foundry_01_24_latest_remapped.ckpt`
+resumes such a download. Then set `RF3_CKPT=DIR/rf3_foundry_01_24_latest_remapped.ckpt` and keep a **GPU** visible
+(`design_ph.py` designs on the CPU either way and uses the GPU only for the fold). This path was **exercised
+end-to-end** (input build → checkpoint load → RF3 forward → a 2-chain binder+target `.cif` → clash and pH-bond
+scores) on an RTX 3070 with 8 GB: the example binder folds in about 2 to 3 minutes per design (pLDDT 0.8 at 3
+recycles and 20 steps), with no atom-embedding cache set up. Without RF3 the notebook still runs: it **exports**
+the selected designs (`pareto_fold_manifest.json`) ready to fold elsewhere and scores a shipped real RF3 fold as
+the demo.
 
 **Every design is saved with its protonation states.** Outputs in `inference/outputs/`:
 
@@ -246,9 +256,8 @@ run.site_report(best)                      # per condition and site: complex vs 
 ```
 
 From the command line, `python inference/design_switch.py` runs the example above on the shipped PD-L1 complex
-(`--help` lists the flags: the two sites, the pH values and states, the binding model, `--states propka`,
-`--reference-pka propka`)
-and writes the ranked designs to `inference/outputs/switch_designs.tsv`.
+and writes the ranked designs to `inference/outputs/switch_designs.tsv`. `--help` lists the flags: the two sites,
+the pH values and states, the binding model, `--states propka` and `--reference-pka propka`.
 
 **Redesign around a residue.** `designable.near` keeps only the binder positions the model couples to the
 named sites — the same neighbourhood `neighbour_k` / `max_mutations` define in `run_ph_redesign`, except that
@@ -307,10 +316,13 @@ protonation={"states": "propka", "ph": 7.4})` takes `states` only. Residues name
 condition gives them whatever `states` is. PROPKA is an optional install (`uv pip install propka`); without it
 the run stops at once with that instruction.
 
-Logs use Python's `logging`. Warnings print with no setup, as plain lines on stderr. The information lines (the
-source in use, a count of the PROPKA states, and for each named site its pKa and where it came from) need a
-handler and the level: `logging.basicConfig(); logging.getLogger("mpnn").setLevel(logging.INFO)`
-(`inference/design_switch.py` does both).
+Logs use Python's `logging`, as terse `key=value` lines. `INFO` says what was used:
+`protonation states=propka ph=7.4 margin=0.5 reference_pka=propka`,
+`propka.states chains=A,B ph=7.40 margin=0.50 HIS=S:3 ASP=D:9 GLU=D:9`,
+`reference_pka site=A:32 res=HIS pka=5.53 source=propka_free constant=6.5`. `WARNING` says what to be careful
+about (the caveats below). With no logging set up, Python prints WARNING records as bare lines on stderr and drops
+INFO ones; `logging.basicConfig(); logging.getLogger("mpnn").setLevel(logging.INFO)` shows both with their level
+(`inference/design_switch.py` does this).
 
 Caveats, each measured by `benchmarks/propka_vs_experiment.py`:
 
@@ -341,10 +353,10 @@ unspecified"). Tests:
 cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q
 ```
 
-Most of these run on synthetic Potts tables. `tests/ph/test_real_structure.py` runs the engine on
-`inference/examples/pdl1_seed_binder.pdb` with the packaged checkpoint (CPU, and CUDA when present); it is
-skipped unless atomworks, `CCD_MIRROR_PATH` (a local CCD mirror: `atomworks ccd sync <dir>`) and `HBPLUS_PATH`
-are set.
+Most of these run on synthetic Potts tables. `tests/ph/test_real_structure.py` (needs `HBPLUS_PATH`) and
+`tests/ph/test_real_structure_propka.py` (needs propka; it removes HBPLUS from its environment) run the engine on
+`inference/examples/pdl1_seed_binder.pdb` with the packaged checkpoint (CPU, and CUDA when present). Each test is
+skipped when atomworks, one of those, or the checkpoint is missing.
 
 ---
 
@@ -352,11 +364,11 @@ are set.
 
 | folder | what it holds |
 |--------|---------------|
-| [`foundry/`](foundry/) | a full verbatim copy of the `ph/foundry` monorepo. The `mpnn` package is the deliverable: the model (`model/pottsmpnn.py`), transforms, the **deployed FLAML labeller** (`transforms/ev6/`), the **design engine** (`inference_engines/potts_mpnn_ph.py`), and `prepare_potts_input` (`potts_inference.py`). `models/{rf3,rfd3,rfd3na}` come along but their multi-GB weights are not shipped. |
+| [`foundry/`](foundry/) | a copy of the `ph/foundry` monorepo; only its `mpnn` package carries this fork's changes. The `mpnn` package is the deliverable: the model (`model/pottsmpnn.py`), transforms, the **deployed FLAML labeller** (`transforms/ev6/`), the **design engine** (`inference_engines/potts_mpnn_ph.py`), and `prepare_potts_input` (`potts_inference.py`). `models/{rf3,rfd3,rfd3na}` come along but their multi-GB weights are not shipped. |
 | [`labeller/`](labeller/) | the FLAML protonation labeller: `label_pdb.py` (example above), the train path `01…05_*.py`, `pr_curve.py` (AUPR), and the trained models. |
-| [`inference/`](inference/) | `design_ph.ipynb` / `.py` (example above) + `design_placement_scan.py` (the engine's per-design placement plot) + `fold_rf3.py` (fold a design with the packaged RF3 engine; needs `RF3_CKPT` + GPU) + `examples/` (a PD-L1 seed binder + a real RF3 fold). |
+| [`inference/`](inference/) | `design_ph.ipynb` / `.py` (example above) + `design_placement_scan.py` (the engine's per-design placement plot) + `fold_rf3.py` (fold a design with the packaged RF3 engine; needs `RF3_CKPT` + GPU) + `design_switch.py` (switch design from the command line) + `examples/` (a PD-L1 seed binder + a real RF3 fold). |
 | [`scoring/`](scoring/) | fold read-outs: `charge_clash` (geometry) + `annotate` (pH-sensitive H-bonds / salt bridges via HBPLUS+PLIP). `score_example.py` is a runnable demo. |
-| [`benchmarks/`](benchmarks/) | PKAD (pKa), MegaScale/FireProt (stability), binding AP, within-backbone, and `placement_by_class.py` (library-wide placement propensity) — all data in-folder. |
+| [`benchmarks/`](benchmarks/) | PKAD (pKa), MegaScale/FireProt (stability), binding AP, within-backbone, `placement_by_class.py` (library-wide placement propensity) and `propka_vs_experiment.py`. The data of all but within-backbone and `placement_by_class.py` is in-folder (see below). |
 | [`training/`](training/) | PottsMPNN + H-bond-head SLURM launchers — **reference** (cluster-specific; the trainer itself is `mpnn.train`). |
 | [`checkpoints/`](checkpoints/) | the v6 design checkpoint (21 MB). |
 | [`.github/`](.github/workflows/ph-tests.yml) | CI: ruff + the `mpnn.ph` tests on every pull request. |
@@ -383,15 +395,20 @@ are set.
 | **labeller AUPR** | `python labeller/pr_curve.py` | `labeller/{his,acid}_pr.png` (AP HIS 0.70, acids 0.33) |
 | **score a fold** | `HBPLUS_PATH=… python scoring/score_example.py` | pH-bond / charge-clash counts |
 | **placement by class** (library-wide) | `python benchmarks/placement_by_class.py` | `benchmarks/placement_by_class.png` |
-| **pKa benchmark** | `PROTON_ROOT=$PWD python -m mpnn.scripts.eval_pkad --checkpoints checkpoints/…/epoch-0125.ckpt` | `pkad_*.csv` + scatter |
+| **pKa benchmark** | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6 --output_dir DIR` | `pkad_*.csv` + scatter in `DIR` |
 | **stability benchmark** | `EV6_OUT_SUBDIR=his0.3_acid0.06 python benchmarks/stability_benchmark.py` | ΔΔG CSVs (GPU recommended) |
 | **3-way bar plot** | `EV6_OUT_SUBDIR=his0.3_acid0.06 python benchmarks/benchmark_barplot.py` | recovery + MegaScale + FireProt figure |
 | **binding AP** | `python benchmarks/binding_ap.py` | `benchmarks/results/summary_global_ap.png` |
 | **within-backbone** | `python benchmarks/within_backbone.py` | `within_backbone_inverse_outcomes.png` |
 
-Benchmark scripts derive the package root from their location (override with `PROTON_ROOT=/abs/path`). The
-model-quality benchmarks (PKAD, stability) compute from raw structures; the design benchmarks (binding,
-within-backbone) read shipped parquets (regenerating them needs the Boltz-2 / RF3 oracles).
+Benchmark scripts derive the package root from their location (override with `PROTON_ROOT=/abs/path`), except
+`eval_pkad`, whose default paths point at the original cluster: pass the flags above, including
+`--extended_vocab v6` for the shipped checkpoint (the default `v4` builds a 32-token model and the weight load
+fails). On the 105 usable PKAD structures it takes about 8 minutes on a CPU. The model-quality benchmarks (PKAD,
+stability) compute from raw structures. Of the design benchmarks only binding AP reads a shipped parquet
+(`mb_gbind_benchmark.parquet`); `within_backbone.py` needs `egfr_pdl1_*.parquet`, `optimized_sweep_scores.parquet`
+and `curated_designs.parquet`, and `placement_by_class.py` needs `data/placement_scan.parquet`. None of those is in
+the repo, and regenerating them needs the Boltz-2 / RF3 oracles.
 
 ---
 
@@ -400,7 +417,7 @@ within-backbone) read shipped parquets (regenerating them needs the Boltz-2 / RF
 This project is released under the **MIT License** — see [`LICENSE`](LICENSE). It covers the
 Proton-PottsMPNN code authored here (`labeller/`, `inference/`, `scoring/`, `benchmarks/`, `training/`,
 `checkpoints/`, the docs, and the pH-design additions to the `mpnn` package). The bundled [`foundry/`](foundry/)
-is a verbatim copy of IPD's rc-foundry and keeps its own **BSD 3-Clause License**
+is a copy of IPD's rc-foundry (only its `mpnn` package carries this project's changes) and keeps its own **BSD 3-Clause License**
 ([`foundry/LICENSE.md`](foundry/LICENSE.md), © 2025 Institute for Protein Design, University of Washington).
 
 If you use this in academic work, please cite the manuscript *"pH-sensitive binder design with
@@ -413,8 +430,8 @@ Proton-PottsMPNN"* (Jacobsen et al., 2026).
 This fork ([SimonCrouzet/ProtonPottsMPNN](https://github.com/SimonCrouzet/ProtonPottsMPNN)) is **modified by
 Simon Crouzet** from the published release
 ([christian-creator/ProtonPottsMPNN](https://github.com/christian-creator/ProtonPottsMPNN), commit `09682ab`).
-The text above is the original README **plus** what was added for these changes; `git log 09682ab..` lists
-each one.
+The text above is the original README with the additions of these changes, and with the statements that no longer
+held corrected in place (listed at the end); `git log 09682ab..` lists each change.
 
 **What changed**
 
@@ -424,19 +441,17 @@ each one.
 | **`PHDesignCriteria`** | `interface_distance` (the interface placement cutoff, default 6 Å) |
 | **results** | the same designs for any `n_jobs`; ids that collide on different sequences are kept (`~2`, never repeated); `to_rows` |
 | **robustness** | one device policy for GPU runs; returned designs always hold allowed tokens; strict condition keys; one seed source (`seed` overrides `base_seed`); `report_tokens` for legacy vocabularies |
-| **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), `HBPLUS_PATH` resolved and checked before HBPLUS runs (see *Getting HBPLUS*), `atomworks` kept below 3, `ipdb` import removed, `propka` imported where used, `import mpnn.train` works again |
+| **setup** | LF line endings, `install.sh` (`--clear`, `VENV_DIR`, repo-root check), `HBPLUS_PATH` resolved and checked before HBPLUS runs (see *Getting HBPLUS*), `atomworks` kept below 3, `ipdb` import removed, `propka` imported where used and optional, `seaborn` installed (`eval_pkad` imports it), `import mpnn.train` works again |
 | **inference scripts** | `design_switch.py` runs switch design from the command line; `design_ph.py` designs on the CPU and keeps the GPU for the RF3 refold; scoring a refolded design no longer fails when a GPU is visible |
 | **PROPKA, opt-in** | `protonation: {states, reference_pka, ph, margin}`: `states: "propka"` labels the input structure from PROPKA instead of EV6 (no HBPLUS needed), `reference_pka: "propka"` gives `linked_equilibrium` per-site pKa values from the free partners (`pka_by_site` sets single sites); both off by default, optional install, logged, with measured caveats |
-| **tests · CI** | `foundry/models/mpnn/tests/ph/` (synthetic Potts tables, plus `test_real_structure.py` on the shipped PD-L1 complex when HBPLUS and a CCD mirror are available) and a ruff + tests workflow |
+| **tests · CI** | `foundry/models/mpnn/tests/ph/` (synthetic Potts tables, plus `test_real_structure.py` and `test_real_structure_propka.py` on the shipped PD-L1 complex) and a ruff + tests workflow |
 
-**Where the original text above no longer holds**
+**Corrected in the text above**
 
-| the original says | now |
-|--------------------|-----|
-| Install: `install.sh` runs `uv venv --clear`; kernel `ProtonPottsMPNN (.venv)` (also in example 2) | it **refuses to overwrite** an existing venv unless given `--clear`; `VENV_DIR` sets where it goes; the kernel is `ProtonPottsMPNN (venv)` |
-| HBPLUS is **not** needed to run the design engine (and the install table) | it **is**: `prepare_potts_input` runs HBPLUS on every structure it featurises. Only `mpnn.ph` itself needs just torch + numpy |
-| Install: the extras include propka | propka is optional now (`uv pip install propka`); only the two PROPKA settings and the training-time pKa annotation use it |
-| example 2 snippet | it needs `seed_source="native"` (the snippet above now has it): the default `"inverse"` needs `initial_sequences` |
-| `foundry/` is "a full verbatim copy" (also under License) | this fork edits the `mpnn` package inside it; the rest is unchanged |
-| pKa benchmark: `… eval_pkad --checkpoints …` with `PROTON_ROOT` | `python -m mpnn.scripts.eval_pkad --ckpt_dir checkpoints/potts_v6_afdb_edge_his0.3_acid0.06 --pkad_csv benchmarks/data/PKAD/PKAD-R-v1.0_2026-04-22T16_0755.441Z.csv --pdb_dir benchmarks/data/PKAD/pdb_cache --extended_vocab v6` — there is no `--checkpoints` flag, `--extended_vocab` defaults to `v4`, and the default paths point at the original cluster |
-| the design benchmarks (binding, within-backbone) read shipped parquets | only **binding AP** does (`mb_gbind_benchmark.parquet`). `within_backbone.py` needs `egfr_pdl1_*.parquet`, `optimized_sweep_scores.parquet` and `curated_designs.parquet`; `placement_by_class.py` needs `data/placement_scan.parquet`. None of them is in the repo |
+- Install: `install.sh` no longer runs `uv venv --clear` unconditionally (`--clear`, `VENV_DIR`); the Jupyter kernel is `ProtonPottsMPNN (venv)`; PROPKA is optional and `atomworks` is kept below 3.
+- HBPLUS is needed by the design engine too (and by nothing else new), except with `protonation.states: propka`.
+- Example 2 needs `seed_source="native"` (the snippet has it): the default `"inverse"` needs `initial_sequences`.
+- `foundry/` is a copy, not a verbatim one: its `mpnn` package carries the changes (also under *License*).
+- The pKa benchmark has no `--checkpoints` flag, and `eval_pkad` could not load the 30-token v6 checkpoint at all; the working command is in the table above.
+- The data the design benchmarks need is not all in the repo (*Benchmark scripts*, above).
+- RF3 weights: where to get them, and the truncated-download trap.
