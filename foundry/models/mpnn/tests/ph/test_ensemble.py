@@ -206,3 +206,29 @@ def test_each_state_keeps_its_own_fixed_binder_tokens():
     actual = run.objective.tokens_for(run.members["mouse"], record.tokens)
     assert torch.equal(actual, expected)
     assert int(actual[0]) == 3
+
+
+def test_a_state_without_neighbours_of_the_site_still_joins_the_ensemble():
+    """The union over states decides whether anything can be designed."""
+    states = two_states()
+    states["human"] = dataclasses.replace(
+        states["human"], neighbour_index=contact_table(1)
+    )
+    states["mouse"] = dataclasses.replace(  # B:2 only touches receptor residues here
+        states["mouse"],
+        neighbour_index=np.array(
+            [[0, 1, 2], [1, 0, 2], [2, 0, 1], [3, 4, 5], [4, 3, 5], [5, 3, 4]]
+        ),
+    )
+    run = run_switch_design_ensemble(
+        states, config(designable={"chains": ["A"], "near": {"sites": ["B:2"]}})
+    )
+    assert run.designable == [1]
+    empty = {
+        name: dataclasses.replace(s, neighbour_index=states["mouse"].neighbour_index)
+        for name, s in states.items()
+    }
+    with pytest.raises(ValueError, match="No designable positions in any state"):
+        run_switch_design_ensemble(
+            empty, config(designable={"chains": ["A"], "near": {"sites": ["B:2"]}})
+        )

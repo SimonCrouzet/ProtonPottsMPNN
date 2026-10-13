@@ -159,6 +159,7 @@ def designable_with_ranks(
     res_ids: Sequence[int],
     spec_sites: Sequence[SiteKey] = (),
     neighbour_index: Optional[np.ndarray] = None,
+    allow_empty: bool = False,
 ) -> Tuple[List[int], Dict[int, int]]:
     """Designable positions before any ``near.max_mutations`` cap, with their closeness ranks.
 
@@ -166,6 +167,8 @@ def designable_with_ranks(
     restricted to the residues coupled to the named sites in ``neighbour_index`` (the
     model's contact table), and ``ranks`` orders them from closest; without it ``ranks`` is
     empty. The cap is applied separately so that several target states can share one.
+    An empty set raises unless ``allow_empty``: in an ensemble a state may have no
+    neighbours of a site while the union over states still has some.
     """
     index = site_index_from_arrays(chain_ids, res_ids)
     chains = set(spec.chains)
@@ -195,7 +198,7 @@ def designable_with_ranks(
         positions = set(ranks)
     else:
         ranks = {}
-    if not positions:
+    if not positions and not allow_empty:
         raise ValueError("No designable positions: check 'designable' in the config.")
     return sorted(positions), ranks
 
@@ -293,7 +296,9 @@ def _check_switch_can_differ(
     )
 
 
-def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
+def _prepare_state(
+    inputs: DesignInputs, config: SwitchDesignConfig, allow_empty: bool = False
+):
     """Resolve one structure's states and build its objective and designable set."""
     n_positions = len(inputs.tokens)
     vocab_size = len(inputs.table)
@@ -327,6 +332,7 @@ def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
         inputs.res_ids,
         sorted(config.spec.sites()),
         inputs.neighbour_index,
+        allow_empty=allow_empty,
     )
     return objective, conditions, designable, ranks
 
@@ -463,7 +469,9 @@ def run_switch_design_ensemble(
             else _check_shared_binder(reference_name, reference, name, inputs)
         )
         try:
-            objective, conditions, designable, ranks = _prepare_state(inputs, config)
+            objective, conditions, designable, ranks = _prepare_state(
+                inputs, config, allow_empty=True
+            )
         except (ValueError, KeyError) as err:
             raise type(err)(f"State {name!r}: {err}") from None
         reverse = {v: k for k, v in position_map.items()}
@@ -484,6 +492,10 @@ def run_switch_design_ensemble(
     designable = cap_by_rank(
         sorted(designable_keys), shared_ranks, _cap(config.designable)
     )
+    if not designable:
+        raise ValueError(
+            "No designable positions in any state: check 'designable' in the config."
+        )
     objective = EnsembleObjective(
         list(members.values()), reduce=config.target_reduce, designable=designable
     )
