@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import math
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -213,6 +214,8 @@ def build_terms(
             raise ValueError(f"Unknown term {name!r}; choose from {sorted(TERMS)}.")
         options = dict(body)
         weight = float(options.pop("weight", 1.0))
+        if not math.isfinite(weight):
+            raise ValueError(f"Term {name!r} needs a finite weight (got {weight}).")
         if weight < 0:
             raise ValueError(f"Term {name!r} has a negative weight.")
         if weight == 0:
@@ -252,6 +255,8 @@ def plan_search(
         raise ValueError(f"search must be one of {SEARCH_MODES}.")
     if scalarisation is not None and scalarisation not in SCALARISATIONS:
         raise ValueError(f"scalarisation must be one of {SCALARISATIONS}.")
+    if any(not math.isfinite(w) for w in weights.values()):
+        raise ValueError("Weights must be finite.")
     if any(w < 0 for w in weights.values()):
         raise ValueError("Weights must be non-negative.")
     names = tuple(name for name, w in weights.items() if w > 0)

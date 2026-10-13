@@ -69,3 +69,9 @@ def test_missing_conditions_fail():
     cfg = {k: v for k, v in FULL.items() if k not in ("conditions", "on", "off")}
     with pytest.raises(ValueError):
         SwitchDesignConfig.from_dict(cfg)
+
+
+@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_weights_are_refused_instead_of_dropping_the_term(weight):
+    with pytest.raises(ValueError, match="finite"):
+        parse(terms={"stability": {"weight": 1.0}, "switch": {"weight": weight}})
