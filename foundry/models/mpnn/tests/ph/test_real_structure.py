@@ -23,7 +23,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 import torch
 
@@ -124,6 +123,8 @@ def run(engine, atoms):
 
 def run_example_script(tmp_path, *flags):
     """inference/design_switch.py as a user runs it: its table and what it printed."""
+    import pandas as pd
+
     out = tmp_path / "designs.tsv"
     done = subprocess.run(
         [
