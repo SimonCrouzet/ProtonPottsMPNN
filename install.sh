@@ -13,7 +13,14 @@ echo "[2/2] installing the foundry package (mpnn + foundry core) + extras, in on
 uv pip install --python .venv/bin/python -e ./foundry -r requirements-extra.txt
 
 echo "[verify] import mpnn + foundry from the packaged tree"
-.venv/bin/python -P -c "import mpnn, foundry, inspect; assert 'ProtonPottsMPNN' in inspect.getfile(mpnn), inspect.getfile(mpnn); print('  ok:', inspect.getfile(mpnn))"
+.venv/bin/python -P -c "
+import inspect, pathlib, sys
+import foundry, mpnn
+root = pathlib.Path(sys.argv[1]).resolve()
+where = pathlib.Path(inspect.getfile(mpnn)).resolve()
+assert root in where.parents, f'mpnn resolves outside this repo: {where}'
+print('  ok:', where)
+" "$PWD"
 
 echo "[kernel] register the venv as a Jupyter kernel (for the notebook)"
 .venv/bin/python -m ipykernel install --user --name protonpottsmpnn --display-name "ProtonPottsMPNN (.venv)" \
