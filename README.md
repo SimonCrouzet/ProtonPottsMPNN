@@ -267,6 +267,52 @@ the same designs.
 `"report_tokens": {"HIS": {"deprotonated": ["HID", "HIE"]}}` — a list is averaged (as `dep_map` did), a single
 name picks one token. Without it `site_report` stops and says the state is ambiguous.
 
+**Protonation source (PROPKA, opt-in).** EV6 and one pKa constant per residue type are the defaults. Two
+independent settings under `"protonation"` in the config let PROPKA take over two different jobs; neither is on
+unless you ask, and the engine logs which source it uses.
+
+| setting | default | `"propka"` |
+|---|---|---|
+| `states` | `ev6`: the geometric classifier the checkpoint was trained with, one call per residue, independent of pH | the starting state of every His, Asp and Glu that no condition names comes from PROPKA's pKa at the pH `ph` (required): protonated if pKa > pH + `margin`, neutral if pKa < pH − `margin`, else ambiguous (`-A`); `margin` defaults to 0.5. HBPLUS is not needed: the H-bond passes only feed EV6, so they are skipped |
+| `reference_pka` | `constant`: one value per residue type (Asp 3.7, Glu 4.3, His 6.5) | `linked_equilibrium` only: the pKa of each site it sums over comes from PROPKA run on the free binder and the free receptor. `binding_options.pka_by_site` (`{"A:32": 5.9}`) sets single sites by hand and wins |
+
+For example `"protonation": {"states": "propka", "ph": 7.4, "reference_pka": "propka"}`; `reference_pka` needs
+`"binding_model": "linked_equilibrium"` and the config refuses it with any other model. `run_ph_redesign(...,
+protonation={"states": "propka", "ph": 7.4})` takes `states` only. Residues named in a condition keep the state the
+condition gives them whatever `states` is. PROPKA is an optional install (`uv pip install propka`); without it
+the run stops at once with that instruction.
+
+Logs use Python's `logging`. `INFO` lines state what was used, in plain words:
+
+```text
+Protonation sources: starting states PROPKA (pH 7.4, margin 0.5), reference pKa PROPKA on the free partners.
+PROPKA states for chain(s) A,B at pH 7.40, margin 0.50: ASP 9 deprotonated, GLU 9 deprotonated, HIS 3 neutral.
+Reference pKa of A:32 (HIS): 5.53 from PROPKA on the free partner; the per-type constant is 6.5.
+```
+
+`WARNING` lines are short sentences about what to be careful with, the caveats below: once per Python process
+"Starting states come from PROPKA, but the checkpoint was trained on EV6 labels. Against experiment PROPKA labels
+are weak …", and each time PROPKA's His values enter the model "PROPKA's reference pKa for His did not beat the
+per-type constant on PKAD …". With no logging set up, Python prints WARNING records as bare lines on stderr and
+drops INFO ones; `logging.basicConfig(); logging.getLogger("mpnn").setLevel(logging.INFO)` shows both with their
+level (`inference/design_switch.py` does this).
+
+Caveats, each measured by `benchmarks/propka_vs_experiment.py`:
+
+- **`states`.** The checkpoint was trained on EV6 labels, and PROPKA is a weak labeller against experiment. On
+  217 neutron structures (8071 residues) the ROC AUC of its pKa is 0.62 for His and 0.78 for Asp/Glu, and at pH 7
+  its His labels are no better than calling every His neutral. EV6 does far better, but it was trained on those
+  structures, so the comparison is not fair. What the setting adds is the dependence on pH. A warning says this,
+  once per Python process.
+- **`reference_pka`.** PROPKA beats the constant for Asp (PKAD, 221 residues: Pearson r 0.81, mean error 0.71
+  against 1.04), only slightly for Glu (254: r 0.71, 0.65 against 0.70), and not for His (171: r 0.15, 1.03
+  against 0.80), the residue of most pH switches; a warning appears whenever PROPKA's His values enter the model.
+  The free partners are used because the pKa shift on binding is already in the Potts energies, and PROPKA on the
+  complex would count it twice (the example binder His A:32: 5.5 free, 3.4 in the complex). The Potts energies are
+  not calibrated (`beta`), so apparent pKa shifts are in model units.
+- **Both.** PROPKA reads the structure as given and drops ligands, metals and waters. Its values are only as good
+  as the backbone and side chains it is shown, which matters for designed or predicted binders.
+
 Unknown config keys raise instead of being ignored, and so do unknown keys inside a condition (`states`, `ph`,
 `label` — a typo such as `state` is an error, not an empty assignment). A switch term whose `on` and `off`
 conditions (its own, when it names them) impose identical states is refused, since it would be zero for every
@@ -315,6 +361,7 @@ skipped when atomworks, one of those, or the checkpoint is missing.
 | **label a PDB** | `HBPLUS_PATH=… python labeller/label_pdb.py` | `labeller/outputs/protonation_labels.csv` |
 | **design a binder** | `python inference/design_ph.py` | placement / trajectory / Pareto PNGs + `designs*.fasta` / `.tsv` (with protonation states) |
 | **switch design, explicit states** | `python inference/design_switch.py`, or `engine.run_switch_design(atom_array=aa, binder_chain="A", config=config)` (see above) | ranked designs: `run.to_rows("A")`, `run.site_report(best)` |
+| **PROPKA against experiment** | `python benchmarks/propka_vs_experiment.py pkad` (or `neutron`, slower, needs HBPLUS) | reference-pKa and starting-state scores against PKAD and the neutron structures |
 | **test `mpnn.ph`** | `cd foundry/models/mpnn && PYTHONPATH=src python -m pytest tests/ph --confcutdir=tests/ph -q` | pass / fail |
 | **retrain the labeller** | `python labeller/05_train_one.py HIS features 1200` | `labeller/models/automl_feature_HIS/` |
 | **labeller AUPR** | `python labeller/pr_curve.py` | `labeller/{his,acid}_pr.png` (AP HIS 0.70, acids 0.33) |
