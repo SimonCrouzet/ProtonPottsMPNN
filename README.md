@@ -36,12 +36,17 @@ The project has two halves, and this folder is self-contained for both:
 cd ProtonPottsMPNN
 ./install.sh                     # uv venv (Python 3.12) + uv pip install -e ./foundry + extras
 source .venv/bin/activate
+
+# or put the venv elsewhere (say, off a nearly full disk):
+VENV_DIR=~/venvs/ppm ./install.sh
+source ~/venvs/ppm/bin/activate
 ```
 
 `install.sh` runs `uv venv --clear` then a single `uv pip install -e ./foundry -r requirements-extra.txt`
 (the one resolution keeps both the foundry core — torch, lightning, atomworks[ml] — and the extras — the
 FLAML stack, jupyter, propka), verifies `import mpnn` resolves inside this folder, and registers the venv as
-a Jupyter kernel `ProtonPottsMPNN (.venv)`. Scripts just `import mpnn`; there are no `sys.path` hacks.
+a Jupyter kernel `ProtonPottsMPNN (venv)`. Scripts just `import mpnn`; there are no `sys.path` hacks. A `VENV_DIR`
+that already exists is replaced only with `./install.sh --clear`, since uv would delete whatever it holds.
 `atomworks` is kept below 3, because version 3.0 rejects atom arrays without a `charge` annotation and the
 structure pipeline fails on it.
 
@@ -123,7 +128,7 @@ internal design campaigns.
 
 ```bash
 python inference/design_ph.py       # -> inference/outputs/ (see below)
-# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (.venv)" kernel)
+# interactively:  jupyter lab inference/design_ph.ipynb   (pick the "ProtonPottsMPNN (venv)" kernel)
 ```
 ```python
 from mpnn.inference_engines.potts_mpnn_ph import PottsMPNNPHEngine, PHDesignCriteria
