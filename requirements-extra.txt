@@ -1,5 +1,10 @@
-# Extra Python deps NOT already declared by foundry/pyproject.toml (rc-foundry).
+# Extra Python deps NOT already declared by foundry/pyproject.toml (rc-foundry), plus an upper bound
+# for one that is (atomworks).
 # Install AFTER `pip install -e foundry` (install.sh does both in one resolution; see README, "Install").
+
+# atomworks 3.0 (2026-10-05) rejects an atom array that has no `charge` annotation, which breaks the
+# structure pipeline and inference/design_ph.py; this code was written and tested against 2.2.
+atomworks[ml]>=2.1.1,<3
 
 # pandas 3.0 defaults to Arrow-backed strings, which FLAML 2.6 can't index (ArrowStringArray has no .iloc);
 # pin to the 2.x series the model was developed with.
@@ -12,13 +17,15 @@ lightgbm>=4.6
 scikit-learn>=1.8,<1.9   # match the FLAML model pickles (avoids unpickle version warnings)
 shap>=0.52            # only for the labeller SHAP/analysis scripts (not required to train)
 
-# foundry's bond_annotation.py has a top-level `import ipdb` (a dev dependency)
-
 # --- notebook / plots (inference/design_ph.ipynb) ---
 matplotlib>=3.8
+seaborn>=0.13        # mpnn.scripts.eval_pkad and the benchmark plots import it
 nbconvert>=7
 nbformat>=5
 jupyterlab>=4
 
-# --- protonation annotation for Potts training/precompute (training/) ---
-propka>=3.5           # imported at module load by mpnn.pipelines.potts_mpnn (pka_annotation)
+# --- OPTIONAL, not installed by install.sh ---
+# PROPKA is only used when you ask for it: protonation.states = "propka" (starting states) and
+# protonation.reference_pka = "propka" (pKa of the named sites), and the training-time pKa annotation.
+# Without it those paths stop with a message that says how to install it:  uv pip install propka
+# propka>=3.5

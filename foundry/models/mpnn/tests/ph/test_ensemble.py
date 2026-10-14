@@ -184,3 +184,51 @@ def test_max_mutations_caps_the_shared_designable_set_not_each_state():
         states, config(designable={"chains": ["A"], "near": {"sites": ["B:2"]}})
     )
     assert uncapped.designable == [1, 2]  # without the cap the states differ
+
+
+def test_each_state_keeps_its_own_fixed_binder_tokens():
+    """A fixed His that is HIS-P in one complex and HIS-S in another stays so in both."""
+    states = two_states()
+    for name, token in [("human", 2), ("mouse", 3)]:
+        tokens = states[name].tokens.clone()
+        tokens[0] = token
+        states[name] = dataclasses.replace(states[name], tokens=tokens)
+    conditions = {  # only the target site is imposed; A:1 is neither designed nor imposed
+        "on": {"states": {"B:2": "deprotonated"}},
+        "off": {"states": {"B:2": "protonated"}},
+    }
+    run = run_switch_design_ensemble(
+        states, config(conditions=conditions, designable={"include": ["A:2", "A:3"]})
+    )
+    record = run.result.records[0]
+    expected = states["mouse"].tokens.clone()
+    expected[run.designable] = record.tokens[run.designable]
+    actual = run.objective.tokens_for(run.members["mouse"], record.tokens)
+    assert torch.equal(actual, expected)
+    assert int(actual[0]) == 3
+
+
+def test_a_state_without_neighbours_of_the_site_still_joins_the_ensemble():
+    """The union over states decides whether anything can be designed."""
+    states = two_states()
+    states["human"] = dataclasses.replace(
+        states["human"], neighbour_index=contact_table(1)
+    )
+    states["mouse"] = dataclasses.replace(  # B:2 only touches receptor residues here
+        states["mouse"],
+        neighbour_index=np.array(
+            [[0, 1, 2], [1, 0, 2], [2, 0, 1], [3, 4, 5], [4, 3, 5], [5, 3, 4]]
+        ),
+    )
+    run = run_switch_design_ensemble(
+        states, config(designable={"chains": ["A"], "near": {"sites": ["B:2"]}})
+    )
+    assert run.designable == [1]
+    empty = {
+        name: dataclasses.replace(s, neighbour_index=states["mouse"].neighbour_index)
+        for name, s in states.items()
+    }
+    with pytest.raises(ValueError, match="No designable positions in any state"):
+        run_switch_design_ensemble(
+            empty, config(designable={"chains": ["A"], "near": {"sites": ["B:2"]}})
+        )

@@ -1,11 +1,12 @@
 """End-to-end design runs on the toy complex, from a plain config dict."""
 
 import itertools
+from copy import deepcopy
 
 import pytest
 import torch
 from objective_fixtures import BASE, DESIGN_BLOCK, NAMES, PARENTS, SPEC
-from potts_fixtures import IdealComplex
+from potts_fixtures import FunctionSystem, IdealComplex
 
 from mpnn.ph.config import DesignableSpec, SwitchDesignConfig
 from mpnn.ph.session import DesignInputs, resolve_designable, run_switch_design
@@ -231,8 +232,72 @@ def test_identical_states_are_fine_for_linked_equilibrium_when_the_ph_differs():
     run_switch_design(
         make_inputs(), make_config(conditions=identical_conditions(), **options)
     )
-    with pytest.raises(ValueError, match="identical states"):
+    with pytest.raises(ValueError, match="same pH"):
         run_switch_design(
             make_inputs(),
             make_config(conditions=identical_conditions(7.0, 7.0), **options),
         )
+
+
+def test_linked_equilibrium_tells_conditions_apart_only_by_ph():
+    """It sums over every imposed site, so different explicit states do not make a switch."""
+    conditions = deepcopy(SPEC["conditions"])
+    for body in conditions.values():
+        body["ph"] = 7.0
+    options = dict(
+        binding_model="linked_equilibrium", terms={"switch": {"weight": 1.0}}
+    )
+    with pytest.raises(ValueError, match="same pH"):
+        run_switch_design(make_inputs(), make_config(conditions=conditions, **options))
+    no_sites = {"on": {"ph": 7.4, "states": {}}, "off": {"ph": 6.5, "states": {}}}
+    with pytest.raises(ValueError, match="no state on any site"):
+        run_switch_design(make_inputs(), make_config(conditions=no_sites, **options))
+
+
+def test_the_switch_check_uses_the_conditions_the_term_selects():
+    selected = {"terms": {"switch": {"on": "actual_on", "off": "actual_off"}}}
+    # the spec's own on/off are identical, the term's are not: a valid switch
+    conditions = identical_conditions()
+    conditions["actual_on"] = {"states": {"A:1": "deprotonated", "B:2": "deprotonated"}}
+    conditions["actual_off"] = {"states": {"A:1": "protonated", "B:2": "protonated"}}
+    run_switch_design(make_inputs(), make_config(conditions=conditions, **selected))
+    # the spec's on/off differ, the term's are identical: refused
+    conditions = deepcopy(SPEC["conditions"])
+    conditions["actual_on"] = {"states": {"A:1": "protonated", "B:2": "protonated"}}
+    conditions["actual_off"] = {"states": {"A:1": "protonated", "B:2": "protonated"}}
+    with pytest.raises(ValueError, match="'actual_on' and 'actual_off'.*identical"):
+        run_switch_design(make_inputs(), make_config(conditions=conditions, **selected))
+
+
+def _design_with_forbidden_energy(forbidden_stability):
+    """Only Ala and Gly may be designed; the other three tokens only differ in stability."""
+    stability = [0.0, 1.0] + [forbidden_stability] * 3
+    potency = [1.0, 0.0, 1.0, 1.0, 1.0]
+    inputs = DesignInputs(
+        tokens=torch.tensor([0, 4]),
+        table=TokenTable(["ALA", "GLY", "HIS", "HIS-P", "HIS-S"]),
+        chain_ids=["A", "B"],
+        res_ids=[1, 1],
+        parents=["ALA", "HIS"],
+        complex_scorer=FunctionSystem(
+            lambda t: stability[int(t[0])] + potency[int(t[0])], 5
+        ),
+        binder_scorer=FunctionSystem(lambda t: stability[int(t[0])], 5),
+        receptor_scorer=FunctionSystem(lambda t: 0, 5),
+        binder_positions=[0],
+        receptor_positions=[1],
+    )
+    config = SwitchDesignConfig.from_dict(
+        {
+            "conditions": {"on": {"states": {"B:1": "deprotonated"}}},
+            "terms": {"stability": {"weight": 0.6}, "potency": {"weight": 0.4}},
+            "designable": {"chains": ["A"]},
+            "block_size": 1,
+        }
+    )
+    run = run_switch_design(inputs, config)
+    return run.describe(run.result.records[0], "A")["canonical_sequence"]
+
+
+def test_energies_of_forbidden_tokens_do_not_change_the_design():
+    assert _design_with_forbidden_energy(0) == _design_with_forbidden_energy(10000)

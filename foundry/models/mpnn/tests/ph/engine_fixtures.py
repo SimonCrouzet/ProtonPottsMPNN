@@ -63,7 +63,9 @@ def bare_engine(engine, ctx):
         ),
     }
     engine_obj._isolated_scorer = lambda c, chains, site_index: isolated[tuple(chains)]
-    engine_obj._build_context = lambda atom_array, chain, base_seed=0: ctx
+    engine_obj._build_context = (
+        lambda atom_array, chain, base_seed=0, protonation=None: ctx
+    )
     engine_obj.device = torch.device("cpu")
     return engine_obj
 

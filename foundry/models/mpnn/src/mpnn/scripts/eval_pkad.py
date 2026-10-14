@@ -79,10 +79,16 @@ def _make_token_idx_tensor(
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
-def load_model(ckpt_path: Path, device: str) -> tuple["PottsMPNN", int]:
+def vocab_features(extended_vocab: str) -> "PottsProteinFeatures":
+    """The featuriser for a vocabulary name: 30 tokens for v6, 32 for v3/v4. A checkpoint only loads
+    into a model of its own vocabulary, so this must match the checkpoint, not default to 32."""
+    return PottsProteinFeatures(token_encoding=get_vocab(extended_vocab)["token_encoding"])
+
+
+def load_model(ckpt_path: Path, device: str, extended_vocab: str = "v4") -> tuple["PottsMPNN", int]:
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model = PottsMPNN(
-        graph_featurization_module=PottsProteinFeatures(),
+        graph_featurization_module=vocab_features(extended_vocab),
         etab_source=PottsMPNN.infer_etab_source(ckpt["model"]),
     )
     model.apply(model.init_weights)
@@ -621,7 +627,7 @@ def main() -> None:
 
     pdb_groups, cache = build_pkad_cache(args.pkad_csv, args.pdb_dir, args.extended_vocab)
 
-    _probe, _ = load_model(selected[0], "cpu")
+    _probe, _ = load_model(selected[0], "cpu", args.extended_vocab)
     token_to_idx = _probe.token_to_idx
     # The token groups come from the checkpoint's vocabulary, never hardcoded: v3/v4 call neutral His
     # HID/HIE, v6 calls it HIS-S, and naming the wrong one silently drops that probability mass.
@@ -643,7 +649,7 @@ def main() -> None:
     # epoch 0 = untrained network; trained checkpoints are shifted to epoch N+1
     # so the x-axis reads "epochs of training completed".
     print("Evaluating random-init baseline (epoch = 0)…", flush=True)
-    random_model = PottsMPNN(graph_featurization_module=PottsProteinFeatures())
+    random_model = PottsMPNN(graph_featurization_module=vocab_features(args.extended_vocab))
     random_model.apply(random_model.init_weights)
     random_model.eval()
     random_model = random_model.to(args.device)
@@ -664,7 +670,7 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     for ckpt_path in tqdm(selected, desc="Checkpoints", file=sys.stderr):
-        model, ckpt_epoch = load_model(ckpt_path, args.device)
+        model, ckpt_epoch = load_model(ckpt_path, args.device, args.extended_vocab)
         epoch = ckpt_epoch + 1  # shift so epoch 0 is reserved for the random baseline
         print(f"  → {ckpt_path.name}  (ckpt_epoch={ckpt_epoch} → plot_epoch={epoch})", flush=True)
 

@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from mpnn.ph.binding import (
+    DEFAULT_MODEL_PKA,
     BindingModel,
     EnergyScorer,
     SystemView,
@@ -38,7 +39,7 @@ from mpnn.ph.vocab_meta import TokenTable
 
 logger = logging.getLogger(__name__)
 
-_LINKED_OPTIONS = {"beta", "max_sites", "pka_by_parent"}
+_LINKED_OPTIONS = {"beta", "max_sites", "pka_by_parent", "pka_by_site"}
 
 
 @dataclass
@@ -64,6 +65,9 @@ class DesignInputs:
     partner_rank: Optional[Callable[[int], Sequence[int]]] = None
     # the model's contact table E_idx [L, K] (slot 0 = the residue itself); needed by designable.near
     neighbour_index: Optional[np.ndarray] = None
+    # reference pKa of each titratable site in the free partners (PROPKA, filled by the engine);
+    # used by linked_equilibrium when config.protonation.reference_pka == "propka"
+    site_pka: Optional[Mapping[SiteKey, float]] = None
 
 
 @dataclass
@@ -159,6 +163,7 @@ def designable_with_ranks(
     res_ids: Sequence[int],
     spec_sites: Sequence[SiteKey] = (),
     neighbour_index: Optional[np.ndarray] = None,
+    allow_empty: bool = False,
 ) -> Tuple[List[int], Dict[int, int]]:
     """Designable positions before any ``near.max_mutations`` cap, with their closeness ranks.
 
@@ -166,6 +171,8 @@ def designable_with_ranks(
     restricted to the residues coupled to the named sites in ``neighbour_index`` (the
     model's contact table), and ``ranks`` orders them from closest; without it ``ranks`` is
     empty. The cap is applied separately so that several target states can share one.
+    An empty set raises unless ``allow_empty``: in an ensemble a state may have no
+    neighbours of a site while the union over states still has some.
     """
     index = site_index_from_arrays(chain_ids, res_ids)
     chains = set(spec.chains)
@@ -195,7 +202,7 @@ def designable_with_ranks(
         positions = set(ranks)
     else:
         ranks = {}
-    if not positions:
+    if not positions and not allow_empty:
         raise ValueError("No designable positions: check 'designable' in the config.")
     return sorted(positions), ranks
 
@@ -223,6 +230,56 @@ def _lookup(index: Mapping[SiteKey, int], text: str) -> int:
     if key not in index:
         raise ValueError(f"Site {text} is not in the structure.")
     return index[key]
+
+
+PKAD_HIS_CAVEAT = (
+    "PROPKA's reference pKa for His did not beat the per-type constant on PKAD "
+    "(Pearson r 0.15, mean error 1.03 against 0.80). Set His sites with "
+    "binding_options.pka_by_site if you prefer another value."
+)
+
+
+def _reference_pka_by_site(
+    config: SwitchDesignConfig,
+    inputs: DesignInputs,
+    explicit: Optional[Mapping[str, float]],
+) -> Optional[Dict[SiteKey, float]]:
+    """Per-site reference pKa for linked_equilibrium: PROPKA's when ``protonation.reference_pka`` is
+    ``"propka"``, then the user's own ``binding_options.pka_by_site`` (``{"A:32": 5.9}``) on top.
+    Logs where each value of a site the conditions name comes from."""
+    by_site: Dict[SiteKey, float] = {}
+    origin: Dict[SiteKey, str] = {}
+    if config.protonation.reference_pka == "propka":
+        if inputs.site_pka is None:
+            raise ValueError(
+                "protonation.reference_pka 'propka' needs the free partners' PROPKA pKa values "
+                "(DesignInputs.site_pka); the engine computes them."
+            )
+        by_site.update(inputs.site_pka)
+        origin.update({key: "PROPKA on the free partner" for key in inputs.site_pka})
+    for text, value in (explicit or {}).items():
+        key = SiteKey.parse(text)
+        by_site[key] = float(value)
+        origin[key] = "binding_options.pka_by_site"
+    site_index = site_index_from_arrays(inputs.chain_ids, inputs.res_ids)
+    from_propka_his = False
+    for key in sorted(config.spec.sites()):
+        if key not in by_site or key not in site_index:
+            continue
+        parent = inputs.parents[site_index[key]]
+        constant = DEFAULT_MODEL_PKA.get(parent)
+        logger.info(
+            "Reference pKa of %s (%s): %.2f from %s; the per-type constant is %s.",
+            key,
+            parent,
+            by_site[key],
+            origin[key],
+            constant if constant is not None else "not defined",
+        )
+        from_propka_his |= parent == "HIS" and origin[key].startswith("PROPKA")
+    if from_propka_his:
+        logger.warning(PKAD_HIS_CAVEAT)
+    return by_site or None
 
 
 def _binding_model(
@@ -256,6 +313,9 @@ def _binding_model(
             site_index,
             inputs.parents,
             options.pop("pka_by_parent", None),
+            pka_by_site=_reference_pka_by_site(
+                config, inputs, options.pop("pka_by_site", None)
+            ),
         )
         return make_binding_model(name, sites=sites, **views, **options)
     return make_binding_model(name, **views, **options)  # raises for unknown names
@@ -271,29 +331,45 @@ def _check_switch_can_differ(
 ) -> None:
     """Refuse a switch term whose ``on`` and ``off`` conditions cannot differ.
 
-    With state-based binding models the energies depend on the conditions only through
-    their states, so identical states make the switch exactly zero for every design;
-    ``linked_equilibrium`` also depends on the pH.
+    The term's own ``on`` / ``off`` override the spec's, as when it is scored. With the
+    state-based binding models the energies depend on a condition only through its
+    states, so identical states make the switch exactly zero for every design.
+    ``linked_equilibrium`` sums over every site a condition imposes, so only the pH
+    tells the conditions apart (and it needs at least one such site).
     """
-    on, off = config.spec.on, config.spec.off
-    weights, _ = config.weights_and_terms()
-    if "switch" not in weights or on is None or off is None:
+    _, terms = config.weights_and_terms()
+    switch = terms.get("switch")
+    if switch is None:
         return
-    if conditions[on].token_by_position != conditions[off].token_by_position:
-        return
-    if config.binding_model == "linked_equilibrium" and (
-        conditions[on].ph != conditions[off].ph
-    ):
-        return
+    on, off = switch.on or config.spec.on, switch.off or config.spec.off
+    if on not in conditions or off not in conditions:
+        return  # the term reports a missing or unknown condition when it is scored
+    if config.binding_model == "linked_equilibrium":
+        if conditions[on].ph != conditions[off].ph and config.spec.sites():
+            return
+        reason = (
+            "have the same pH"
+            if conditions[on].ph == conditions[off].ph
+            else "impose no state on any site"
+        )
+        hint = "give them different pH values and name the sites that titrate"
+    else:
+        if conditions[on].token_by_position != conditions[off].token_by_position:
+            return
+        reason = "impose identical states"
+        hint = (
+            "check the condition keys (for example 'states', not 'state') and the "
+            "states you assigned"
+        )
     raise ValueError(
-        f"The {on!r} and {off!r} conditions impose identical states"
-        + (" and the same pH" if config.binding_model == "linked_equilibrium" else "")
-        + ", so the switch term is zero for every design. Check the condition keys "
-        "(for example 'states', not 'state') and the states you assigned."
+        f"The {on!r} and {off!r} conditions {reason}, so the switch term is zero for "
+        f"every design. {hint[0].upper()}{hint[1:]}."
     )
 
 
-def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
+def _prepare_state(
+    inputs: DesignInputs, config: SwitchDesignConfig, allow_empty: bool = False
+):
     """Resolve one structure's states and build its objective and designable set."""
     n_positions = len(inputs.tokens)
     vocab_size = len(inputs.table)
@@ -327,6 +403,7 @@ def _prepare_state(inputs: DesignInputs, config: SwitchDesignConfig):
         inputs.res_ids,
         sorted(config.spec.sites()),
         inputs.neighbour_index,
+        allow_empty=allow_empty,
     )
     return objective, conditions, designable, ranks
 
@@ -463,7 +540,9 @@ def run_switch_design_ensemble(
             else _check_shared_binder(reference_name, reference, name, inputs)
         )
         try:
-            objective, conditions, designable, ranks = _prepare_state(inputs, config)
+            objective, conditions, designable, ranks = _prepare_state(
+                inputs, config, allow_empty=True
+            )
         except (ValueError, KeyError) as err:
             raise type(err)(f"State {name!r}: {err}") from None
         reverse = {v: k for k, v in position_map.items()}
@@ -480,10 +559,16 @@ def run_switch_design_ensemble(
         members[name] = EnsembleMember(
             name, objective, conditions, inputs, inputs.tokens.clone(), position_map
         )
-    objective = EnsembleObjective(list(members.values()), reduce=config.target_reduce)
     # one total cap on the shared set; capping each state and uniting would exceed it
     designable = cap_by_rank(
         sorted(designable_keys), shared_ranks, _cap(config.designable)
+    )
+    if not designable:
+        raise ValueError(
+            "No designable positions in any state: check 'designable' in the config."
+        )
+    objective = EnsembleObjective(
+        list(members.values()), reduce=config.target_reduce, designable=designable
     )
     result = _search(objective, reference, designable, config)
     return EnsembleRun(

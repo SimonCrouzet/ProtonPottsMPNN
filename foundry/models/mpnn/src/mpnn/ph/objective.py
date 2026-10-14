@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import math
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -213,6 +214,8 @@ def build_terms(
             raise ValueError(f"Unknown term {name!r}; choose from {sorted(TERMS)}.")
         options = dict(body)
         weight = float(options.pop("weight", 1.0))
+        if not math.isfinite(weight):
+            raise ValueError(f"Term {name!r} needs a finite weight (got {weight}).")
         if weight < 0:
             raise ValueError(f"Term {name!r} has a negative weight.")
         if weight == 0:
@@ -252,6 +255,8 @@ def plan_search(
         raise ValueError(f"search must be one of {SEARCH_MODES}.")
     if scalarisation is not None and scalarisation not in SCALARISATIONS:
         raise ValueError(f"scalarisation must be one of {SCALARISATIONS}.")
+    if any(not math.isfinite(w) for w in weights.values()):
+        raise ValueError("Weights must be finite.")
     if any(w < 0 for w in weights.values()):
         raise ValueError("Weights must be non-negative.")
     names = tuple(name for name, w in weights.items() if w > 0)
@@ -303,6 +308,19 @@ def estimate_term_scale(
     return TermScale(center, scale, (float(flat.min()) - center) / scale)
 
 
+def mask_joint(joint: torch.Tensor, valid_mask: Optional[torch.Tensor]) -> torch.Tensor:
+    """``joint`` ([V] * B) with every assignment that puts a forbidden token anywhere in
+    the block set to ``inf``. ``valid_mask`` ([V] bool) lists the allowed tokens."""
+    if valid_mask is None:
+        return joint
+    valid_mask = valid_mask.to(joint.device)  # the mask is built on the CPU
+    for axis in range(joint.ndim):
+        shape = [1] * joint.ndim
+        shape[axis] = -1
+        joint = joint.masked_fill(~valid_mask.reshape(shape), float("inf"))
+    return joint
+
+
 def choose_assignment(
     joint: torch.Tensor,
     valid_mask: Optional[torch.Tensor] = None,
@@ -315,13 +333,7 @@ def choose_assignment(
     0 takes the argmin; above 0 samples from ``softmax(-(J - min J) / T)``; pass a
     seeded ``generator`` for reproducible sampling.
     """
-    n = joint.ndim
-    if valid_mask is not None:
-        valid_mask = valid_mask.to(joint.device)  # the mask is built on the CPU
-        for axis in range(n):
-            shape = [1] * n
-            shape[axis] = -1
-            joint = joint.masked_fill(~valid_mask.reshape(shape), float("inf"))
+    joint = mask_joint(joint, valid_mask)
     flat = joint.reshape(-1)
     if not torch.isfinite(flat).any():
         raise ValueError("No valid assignment: every joint assignment is forbidden.")
@@ -378,10 +390,18 @@ class Objective:
         tokens: torch.Tensor,
         blocks: Sequence[Sequence[int]],
         names: Optional[Sequence[str]] = None,
+        valid_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, TermScale]:
-        """Estimate and store scales from the enumerated ``blocks`` around ``tokens``."""
+        """Estimate and store scales from the enumerated ``blocks`` around ``tokens``.
+
+        Only assignments the search can choose (``valid_mask``) enter the spread and the
+        ideal point: a forbidden token must not change how the terms are weighed.
+        """
         for name in names or self.terms:
-            joints = [self.block_values(name, tokens, b) for b in blocks]
+            joints = [
+                mask_joint(self.block_values(name, tokens, b), valid_mask)
+                for b in blocks
+            ]
             self.scales[name] = estimate_term_scale(
                 joints, center=self.value(name, tokens)
             )

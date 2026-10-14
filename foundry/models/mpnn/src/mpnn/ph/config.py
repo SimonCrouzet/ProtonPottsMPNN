@@ -7,6 +7,7 @@ back to a default. Defaults live here; command-line flags (or a YAML file) overr
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -36,9 +37,75 @@ _TOP_LEVEL = {
     "allow_bare_titratable",
     "target_reduce",
     "report_tokens",
+    "protonation",
 }
+_PROTONATION = {"states", "reference_pka", "ph", "margin"}
+STATE_SOURCES = ("ev6", "propka")
+REFERENCE_PKA_SOURCES = ("constant", "propka")
+DEFAULT_PROPKA_MARGIN = 0.5
 _DESIGNABLE = {"chains", "include", "exclude", "near"}
 _NEAR = {"sites", "k", "max_mutations"}
+
+
+@dataclass(frozen=True)
+class ProtonationSources:
+    """Two separate choices of what PROPKA is used for. Both default to not using it.
+
+    ``states``: the starting protonation state of every His, Asp and Glu that no condition names.
+    ``"ev6"`` (default) is the geometric classifier the checkpoint was trained with: one call per
+    residue, independent of pH. ``"propka"`` reads PROPKA's pKa of each residue at the pH ``ph``
+    (required): protonated when pKa > pH + ``margin``, neutral when pKa < pH - ``margin``,
+    ambiguous (``-A``) in between (``margin`` defaults to 0.5). Caveats: the checkpoint was
+    trained on EV6 labels; against experimental states PROPKA is a weak labeller (ROC AUC of its
+    pKa 0.62 for His, 0.78 for Asp/Glu on the neutron structures), and PROPKA is run on the
+    structure as given, so a designed or predicted backbone gives pKa values only as good as it is.
+
+    ``reference_pka``: the pKa that ``linked_equilibrium`` (the only model that uses one) gives each
+    site it sums over. ``"constant"`` (default) is one value per residue type (Asp 3.7, Glu 4.3,
+    His 6.5). ``"propka"`` runs PROPKA on the free binder and the free receptor and uses its value
+    for each site: the pKa shift that binding brings is already in the Potts energies, so the
+    complex must not be used. Caveat: on PKAD (experimental pKa in monomeric proteins) PROPKA beats
+    the constant for Asp (Pearson r 0.81, mean error 0.71 against 1.04), slightly for Glu, and not
+    for His (r 0.15, 1.03 against 0.80); ``binding_options.pka_by_site`` sets single sites by hand.
+
+    The two are independent. Residues named in a condition keep the state the condition gives them
+    whatever ``states`` is.
+    """
+
+    states: str = "ev6"
+    reference_pka: str = "constant"
+    ph: Optional[float] = None
+    margin: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.states not in STATE_SOURCES:
+            raise ValueError(f"protonation.states must be one of {STATE_SOURCES}.")
+        if self.reference_pka not in REFERENCE_PKA_SOURCES:
+            raise ValueError(
+                f"protonation.reference_pka must be one of {REFERENCE_PKA_SOURCES}."
+            )
+        if self.states == "ev6":
+            if self.ph is not None or self.margin is not None:
+                raise ValueError(
+                    "protonation.ph and .margin only apply to protonation.states 'propka'."
+                )
+            return
+        if self.ph is None or not math.isfinite(self.ph):
+            raise ValueError(
+                "protonation.states 'propka' needs a finite protonation.ph."
+            )
+        if self.margin is None:
+            object.__setattr__(self, "margin", DEFAULT_PROPKA_MARGIN)
+        if not math.isfinite(self.margin) or self.margin < 0:
+            raise ValueError("protonation.margin must be a finite number >= 0.")
+
+    @classmethod
+    def from_dict(cls, cfg: Optional[Mapping[str, Any]]) -> "ProtonationSources":
+        cfg = dict(cfg or {})
+        unknown = set(cfg) - _PROTONATION
+        if unknown:
+            raise ValueError(f"Unknown protonation keys: {sorted(unknown)}")
+        return cls(**cfg)
 
 
 @dataclass(frozen=True)
@@ -94,6 +161,8 @@ class SwitchDesignConfig:
     # how site_report compares states a vocabulary names ambiguously (v3/v4 have two neutral
     # His tautomers): {"HIS": {"deprotonated": ["HID", "HIE"]}}; a list is averaged
     report_tokens: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # what PROPKA is used for: the starting states, the reference pKa values (both off by default)
+    protonation: ProtonationSources = field(default_factory=ProtonationSources)
 
     def __post_init__(self) -> None:
         if self.block_size < 1 or self.max_rounds < 1 or self.n_seeds < 1:
@@ -105,6 +174,14 @@ class SwitchDesignConfig:
         if self.divisions < 1:
             raise ValueError("divisions must be >= 1.")
         validate_report_token_shapes(self.report_tokens)
+        if (
+            self.protonation.reference_pka == "propka"
+            and self.binding_model != "linked_equilibrium"
+        ):
+            raise ValueError(
+                "protonation.reference_pka 'propka' only applies to the linked_equilibrium "
+                f"binding model, the one that uses a pKa (binding_model is {self.binding_model!r})."
+            )
         if self.target_reduce not in ("max", "mean"):
             raise ValueError("target_reduce must be 'max' or 'mean'.")
         self.plan()  # validates terms, search mode and scalarisation now
@@ -148,6 +225,7 @@ class SwitchDesignConfig:
             )
             if key in cfg
         }
+        options["protonation"] = ProtonationSources.from_dict(cfg.get("protonation"))
         return cls(
             spec=StateSpec.from_dict(
                 {k: cfg[k] for k in ("conditions", "on", "off") if k in cfg}

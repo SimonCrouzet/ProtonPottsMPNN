@@ -25,7 +25,7 @@ Kernels the sweep will consider:
 
 Output: sandbox/ev5/charge_ctx.parquet  (one row per (titratable atom, charged neighbour) pair)
 """
-import gc, gzip, sys, warnings
+import gc, gzip, os, sys, warnings
 gc.disable()
 warnings.filterwarnings("ignore")
 

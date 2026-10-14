@@ -24,6 +24,7 @@ from mpnn.ph.objective import (
     build_terms,
     choose_assignment,
     estimate_term_scale,
+    mask_joint,
     plan_search,
 )
 
@@ -287,3 +288,16 @@ def test_linked_equilibrium_drives_terms_through_each_conditions_ph(term):
     assert on_ph == 7.4
     expected = ctx.binding.energy(ctx.tokens_in(BASE, "on"), ph=on_ph)
     assert PotencyTerm().value(ctx, BASE) == pytest.approx(expected)
+
+
+def test_plan_search_refuses_non_finite_weights():
+    with pytest.raises(ValueError, match="finite"):
+        plan_search({"stability": 1.0, "switch": float("nan")})
+
+
+def test_mask_joint_forbids_a_token_at_every_block_position():
+    joint = torch.arange(9, dtype=torch.float64).reshape(3, 3)
+    masked = mask_joint(joint, torch.tensor([True, False, True]))
+    assert torch.isinf(masked[1]).all() and torch.isinf(masked[:, 1]).all()
+    assert masked[0, 0] == 0 and masked[2, 2] == 8
+    assert mask_joint(joint, None) is joint
